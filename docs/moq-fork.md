@@ -82,8 +82,10 @@ Then in idfon:
   The idfon manifests pin these (root `[patch.crates-io]` + the direct git deps
   in `iroh-c-ffi`, `idfon-media`, `idfon-live-media` — grep for `donpark/moq`
   and `n0-computer/iroh-live` to find them all).
-- **iroh-live pin**: `n0-computer/iroh-live@9abd29be` (branch `Frando/bump-moq-2`,
-  "build against the released moq crates"). It is the bridge between moq and
+- **iroh-live pin**: `n0-computer/iroh-live@dd80d44e` (`main`; the #73 squash
+  of `Frando/bump-moq-2`, "build against the released moq crates" — the
+  `9abd29be` branch tip is the same content plus a two-line README delta).
+  It is the bridge between moq and
   idfon (`moq-media`, `iroh-moq`); move it deliberately, and only to a commit
   whose moq reqs the fork satisfies.
 - `moq-relay` never enters our dependency graph (iroh-live's workspace lists it;

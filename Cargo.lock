@@ -3800,7 +3800,7 @@ dependencies = [
 [[package]]
 name = "iroh-live"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/iroh-live?rev=9abd29be2da2564cf295225ba630a34f62daa7a4#9abd29be2da2564cf295225ba630a34f62daa7a4"
+source = "git+https://github.com/n0-computer/iroh-live?rev=dd80d44efb587f31deed14fc11eeaa12946c9fd2#dd80d44efb587f31deed14fc11eeaa12946c9fd2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3892,7 +3892,7 @@ dependencies = [
 [[package]]
 name = "iroh-moq"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/iroh-live?rev=9abd29be2da2564cf295225ba630a34f62daa7a4#9abd29be2da2564cf295225ba630a34f62daa7a4"
+source = "git+https://github.com/n0-computer/iroh-live?rev=dd80d44efb587f31deed14fc11eeaa12946c9fd2#dd80d44efb587f31deed14fc11eeaa12946c9fd2"
 dependencies = [
  "iroh",
  "moq-net",
@@ -4588,7 +4588,7 @@ dependencies = [
 [[package]]
 name = "moq-media"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/iroh-live?rev=9abd29be2da2564cf295225ba630a34f62daa7a4#9abd29be2da2564cf295225ba630a34f62daa7a4"
+source = "git+https://github.com/n0-computer/iroh-live?rev=dd80d44efb587f31deed14fc11eeaa12946c9fd2#dd80d44efb587f31deed14fc11eeaa12946c9fd2"
 dependencies = [
  "bytes",
  "derive_more",

@@ -761,7 +761,7 @@ now carries two living, unrelated lines — `release` (our lineage; the
 crates.io releases are cut from it, and iroh-live builds against those)
 and a re-rooted `main`. We moved to `donpark/moq@loss-recovery-release`
 (= `origin/release` + our loss-recovery/FEC/BitrateControl/codec patches)
-and iroh-live `9abd29be` (`Frando/bump-moq-2`, released moq crates).
+and iroh-live `dd80d44e` (`main`, #73 "build against the released moq crates").
 Branch map, the git-source unification rules, and the update procedure live
 in `moq-fork.md`. Decision stands: keep the git pins (reproducible builds);
 route delta work upstream so it survives the consolidation; review pins
