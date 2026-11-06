@@ -629,7 +629,54 @@ claim; the head's numbers are agreement with an *audio* handoff definition, not
 with human judgement. Nothing above ships: the seam is unchanged, the head is
 extra, and the percentile fit is 80 + 33 minutes of two datasets.
 
+### Outcome labels on the 13 live captures (step 0, 2026-11-06)
+
+The relay's seven outcome names were reconstructed offline from the 13 live
+captures (1,985 s) by `scripts/live-outcomes.py`: replay the shard's recorded
+teacher 8-vectors through the rules with the derived mode track (the same replay
+as `live_barge.py`), take the caller's utterances and the agent's playback runs
+from the capture's two channels, and apply the relay's predicates verbatim.
+
+| label | count |
+| --- | ---: |
+| caller utterances / playback runs | 303 / 258 |
+| ENDPOINT / BARGE / BACKCHANNEL events | 139 / 57 / 69 |
+| `early_cut_in` | 8 |
+| `late_endpoint` | 15 |
+| `real_barge` | 2 |
+| `false_barge` | 1 |
+| `missed_barge` | 38 |
+| `bc_ok` | 10 |
+| `bc_intrusive` | 59 |
+
+Readings. The labels are mechanically derivable: no episode needed a judgement
+call, so the step-0 kill criterion passes (the only choices are the rules' own
+-50 dB VAD and the 0.2 s bridge). The BARGE split reproduces the release-tail
+finding *through the label definition*: of 41 utterances that started inside a
+playback run and took the floor, 38 got no barge within 0.64 s (`missed_barge`),
+2 did (`real_barge`), and the one short sound that did is a false barge; the
+other 54 events fire elsewhere, overwhelmingly in the bridged tail. That is not
+the same number as the "43% catch" measured by `handoff-eval.py`, and the gap is the definition: the label compares the event's
+*hop end* (`bargeFiredAtS = hopS`) to the utterance start, so a crossing late in
+the hop lands outside 0.64 s even when the head's peak is inside the finer
+window. Treat the label as the product's current accounting, not as a catch
+metric. `late_endpoint` at 15/139 endpoints (10.8%) is likewise the relay's
+endpoint-time measure, not the "naive ≥1.2 s gap" count that the open question
+after this section rejects.
+
+Approximations the capture cannot remove: the relay's "loud" is any nonzero
+20 ms mic chunk; offline we use the rules' -50 dB VAD per 80 ms frame and the
+relay's 0.2 s bridge. `replyStartS` is approximated as the endpoint's hop end
++ 40 ms because TTS latency is not in the capture. Playback runs are ch1 VAD
+runs, with backchannel runs excluded by the replay's BACKCHANNEL event time.
+`--events student` replays the unshipped L4 student instead (11 BARGE over the
+same 13 captures; its yield stays below 0.5 on the first capture) — a tier
+comparison, not the existing vocabulary.
+
 ## References
+
+- `scripts/live-outcomes.py` — step 0's offline label derivation; `--selfcheck`
+  pins the seven predicates.
 
 - `docs/voice-tyger-ondevice.md` — per-tier guard numbers, precision rulings, the
   incremental-KV failure record.
