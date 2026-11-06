@@ -1346,6 +1346,54 @@ restart; and the streaming mel reproduces the whole-signal extractor row for row
 fixture. Not measured: iPhone ANE scheduling/thermals and the first-decision latency
 (the first chunk needs its full 41-row window, so it lands one hop after a stream start).
 
+**Publishing the prefix (packer tier, 2026-11-05, #132).** The prefix is a third
+artifact beside the cut tier, packed by `scripts/pack-tyger-models.mjs` as the
+`prefix` tier and installed at `<store>/prefix`. Measured staging output
+(`--batch 2 --depth 4 --chunk-ms 320`, 2026-11-05): **102,004,225 B** (102.0 MB) for
+the directory — 102,003,748 B package + 477 B `metadata.json`; the weight file alone
+is 101,855,040 B. Sequence, offline until step 3:
+
+1. Export (does not overwrite `asr-tap-320/` or `asr-prefix-320/`):
+   `ports/tyger-student/.venv/bin/python ports/tyger-student/export_asr_tap.py
+   --export --prefix-only --batch 2 --depth 4 --chunk-ms 320 --pass shipping
+   --precision fp16 --int8 --out bench-results/turn-prefix-320`.
+   `metadata.json` must carry `prompt_id` (101), `chunk_mel_frames 32`,
+   `total_mel_frames 41`, `cache_channel_shape [2, 4, 42, 1024]` — the loader
+   refuses without the first and cross-checks the last against the graph.
+2. Pack the **full** set into one manifest (a `--only` pack is partial and must not
+   replace the release manifest; the packer warns):
+   `node scripts/pack-tyger-models.mjs --asset name --out dist/tyger-models`
+   (`--prefix-dir` overrides the staging dir). The tier needs exactly one
+   `.mlpackage` plus `metadata.json`, or the packer stops — the loader treats two
+   packages as ambiguous and none as absent.
+3. Upload `dist/tyger-models` to `donpark/tyger-models` at a new revision and pin
+   the manifest's `url_base` to it
+   (`https://huggingface.co/donpark/tyger-models/resolve/<commit>`), not `main`;
+   the store keeps files that already exist, so bump artifact names when the bytes
+   change.
+4. Flip `IDFON_TURN_PREFIX=1`. **Open wiring decision:** flipping the flag only
+   changes what the loader accepts from disk; `VoiceModelGate.ensureTurnTier` still
+   requests `coreai`/`coreml` only, so nothing downloads the `prefix` tier yet. The
+   least disruptive completion is one conditional call there — when
+   `TurnPrefix.isEnabled`, `await TygerModelStore.ensure(tier: "prefix")` after the
+   step tier — which, because the store filters entries by tier prefix, keeps the
+   flag-off download at exactly today's bytes.
+
+**Download cost (per existing user): 0 B of model weights, ~1 KB of manifest.** The
+manifest gains four entries (content-addressed or flat assets, all under
+`prefix/`), but `TygerModelStore.fetch` only downloads entries whose `name` starts
+with the requested tier. The flag-off path never requests `prefix`, so the 102 MB
+is paid only by a device that turns the flag on (and the cut/coreai/coreml tier it
+falls back to stays installed beside it). The upload tree grows from the published
+set by the same 102 MB.
+
+`PrefixPackTests` proves the round trip offline: it decodes a packer dry-run,
+verifies every entry's sha256 and size, installs it by `name` the way the store
+does, asserts `prefix/<package>/…` reconstructs and `TurnPrefix.artifact` finds
+exactly one package with 2 slots / 4 layers / depth 42 / 32+9 mel / 4 tap rows, then
+loads `TurnPrefixModel` from that tree. Run it as documented in the test file
+(`IDFON_PREFIX_PACK=<dry-run dir>`).
+
 ### The 320 refit and a turn-purpose prefix (2026-11-05, #132)
 
 **Verdict first: the refit is a wash, not a rescue.** Re-targeting the `l4-streaming`
