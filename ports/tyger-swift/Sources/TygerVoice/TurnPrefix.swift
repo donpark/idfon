@@ -393,14 +393,15 @@ public struct FrameOrigin: Equatable {
     public func frame(ofRow row: Int) -> Int { blockStart + row }
 }
 
-/// The turn prefix's default-off switch and its place in the model store.
+/// The turn prefix's switch and its place in the model store.
 public enum TurnPrefix {
-    /// `IDFON_TURN_PREFIX=1` turns the tier on. Default off: nothing about the 320 ms
-    /// split tier ships until its gates land (#132).
+    /// Default on since the 2026-11-05 ruling (#132, #185): `IDFON_TURN_PREFIX=0`
+    /// (or `no`/`off`/`false`) is the kill switch back to the cut, no rebuild needed.
+    /// Unset is on; a set but unrecognized value keeps the cut (fail-open).
     public static let environmentKey = "IDFON_TURN_PREFIX"
 
     public static func isEnabled(environment: [String: String]) -> Bool {
-        guard let raw = environment[environmentKey]?.lowercased() else { return false }
+        guard let raw = environment[environmentKey]?.lowercased() else { return true }
         return ["1", "true", "yes", "on"].contains(raw)
     }
 
