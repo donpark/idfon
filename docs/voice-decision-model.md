@@ -673,10 +673,43 @@ runs, with backchannel runs excluded by the replay's BACKCHANNEL event time.
 same 13 captures; its yield stays below 0.5 on the first capture) — a tier
 comparison, not the existing vocabulary.
 
+### Shadow comparison on the same captures (step 2, 2026-11-06)
+
+`--policies level,edge,edge+gate` replays the same teacher events under each
+barge policy and derives the same seven labels. `level` is the step-0 baseline
+(the rules replay as-is); `edge` keeps a BARGE only on a threshold crossing
+(yield below `barge_thr` two frames before the event); `edge+gate` also requires
+the agent's own channel to be audible within the gate's lookback. The product's
+`tuned()` enables edge and leaves the audibility gate default-off; this
+comparison runs each as if enabled.
+
+| policy | BARGE events | real | false | missed | harmful (false+missed) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| level | 57 | 2 | 1 | 38 | 39 |
+| edge | 32 | 4 | 1 | 36 | 37 |
+| edge+gate, firing frame only (`lookup=0`, the landed code) | 6 | 2 | 1 | 38 | 39 |
+| edge+gate, 320 ms lookback (`lookup=3`, db=-50, the decision text) | 14 | 4 | 1 | 36 | 37 |
+
+Readings. Edge-triggering is the free win on these labels: 57 → 32 events,
+harmful outcomes 39 → 37, and it catches two more real floor-takes (2 → 4). The
+audibility gate only helps when its lookback matches the decision text's "within
+320 ms": at the landed code's firing-frame check it removes 26 of the 32 edge
+events but loses 2 of the 4 real catches, leaving harmful outcomes at the
+baseline 39. A 320 ms lookback keeps all 4 real catches at 14 events. The
+label's `missed_barge` counts floor-takes after the agent has stopped, where a
+barge action has nothing to stop, so it cannot adjudicate the gate's real
+acceptance (strict-overlap catch) — step 1's audio audit still decides. This is
+the definition gap the section above names, now with a number on it.
+
+The comparison is an event-stream approximation: filtering happens after the
+rules replay, so the rules' internal state evolves as if the suppressed barge
+fired. `barge_gate.py` uses the same pattern. A state-faithful replay would need
+the policy flags in the Python rules port.
+
 ## References
 
-- `scripts/live-outcomes.py` — step 0's offline label derivation; `--selfcheck`
-  pins the seven predicates.
+- `scripts/live-outcomes.py` — step 0's offline label derivation and step 2's
+  policy comparison; `--selfcheck` pins the seven predicates.
 
 - `docs/voice-tyger-ondevice.md` — per-tier guard numbers, precision rulings, the
   incremental-KV failure record.

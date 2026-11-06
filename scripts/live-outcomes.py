@@ -31,6 +31,11 @@ more than they are):
 Usage:
   .venv/bin/python scripts/live-outcomes.py --shards bench-results/live-shipping \
       --wavs bench-results/turn-layer-2026-11-06/live/in --out /tmp/live-outcomes.json
+
+  --policies level,edge,edge+gate  score the same replay under each barge policy
+  and print a comparison (level = the step-0 baseline, edge = one fire per
+  threshold crossing, edge+gate = edge and the agent channel audible on the
+  firing frame).
 """
 import argparse
 import json
@@ -50,6 +55,7 @@ BARGE_WINDOW_S = 0.64                 # barge must fire within this of the onset
 DEAD_AIR_S = 1.2                      # late_endpoint threshold
 BC_WINDOW_S = 1.0                     # bc_ok: caller speech within 1 s after
 THR = (0.9146, 0.5, 0.5)              # shipped ep/barge/bc (rules.py defaults)
+BARGE_DEB = 2                         # traits: yield >= thr for this many frames
 LABELS = ("early_cut_in", "late_endpoint", "real_barge", "false_barge",
           "missed_barge", "bc_ok", "bc_intrusive")
 
@@ -186,6 +192,35 @@ def replay_events(vecs, energy, agent_db, modes, oracle, thr):
     return out
 
 
+def filter_barges(events, vecs, audible, policy, thr=THR[1]):
+    """Apply a barge policy to replayed events (post-filter, as barge_gate.py does).
+
+    level      every BARGE the rules emit (the step-0 baseline)
+    edge       keep a BARGE only on a threshold crossing: yield `BARGE_DEB` frames
+               before the event was below the threshold. The rules' own state
+               still evolves as if it fired, so this is an event-stream
+               approximation of the product's `barge_edge`, not a state replay.
+    edge+gate  edge, and the agent channel is audible on the firing frame
+               (`audible`, the product's `barge_gate_db` condition).
+    """
+    if policy == "level":
+        return events
+    keep = []
+    for e in events:
+        if e["kind"] != "BARGE":
+            keep.append(e)
+            continue
+        f = e["frame"]
+        if policy in ("edge", "edge+gate"):
+            prev = vecs[f - BARGE_DEB][5] if f >= BARGE_DEB else -1.0
+            if prev >= thr:
+                continue
+        if policy == "edge+gate" and not audible[f]:
+            continue
+        keep.append(e)
+    return keep
+
+
 def student_vecs(model, hu, ha, energy, modes, oracle, device, torch):
     """The shipped student's 8-vector per frame, carrying its own rules session."""
     sess = oracle.EarsSession(0)
@@ -215,10 +250,11 @@ def read_capture(wav_dir, session_id):
 
 
 def analyze(shard_dir, wav_dir, events_from="teacher", student_path=None,
-            device="cpu", thr=THR):
+            device="cpu", thr=THR, policies=("level",), gate_db=-50.0,
+            gate_lookup=0):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ports/tyger-student"))
     from data import load_shard
-    from mode_track import frame_modes
+    from mode_track import agent_audible, frame_modes
     from oracle import Oracle
 
     oracle = Oracle(device=device)
@@ -251,16 +287,19 @@ def analyze(shard_dir, wav_dir, events_from="teacher", student_path=None,
         else:
             vecs = student_vecs(model, frames["hu_l4"], frames["ha_l4"],
                                 frames["energy"], modes, oracle, device, torch)
-        events = replay_events(vecs, frames["energy"], agent_db, modes, oracle, thr)
+        base = replay_events(vecs, frames["energy"], agent_db, modes, oracle, thr)
+        audible = agent_audible(agent_db, lookup=gate_lookup, thr=gate_db)
 
         speech = intervals(mic_db > VAD_DB)
         pieces = intervals(agent_db > VAD_DB)
-        episodes, totals = derive(speech, pieces, events)
-        rows.append(dict(sid=sid, seconds=round(n * FRAME_S, 1),
-                         speech=len(speech), pieces=len(pieces),
-                         events={k: sum(1 for e in events if e["kind"] == k)
-                                 for k in ("ENDPOINT", "BARGE", "BACKCHANNEL")},
-                         totals=totals, episodes=episodes))
+        for policy in policies:
+            events = filter_barges(base, vecs, audible, policy, thr[1])
+            episodes, totals = derive(speech, pieces, events)
+            rows.append(dict(sid=sid, seconds=round(n * FRAME_S, 1), policy=policy,
+                             speech=len(speech), pieces=len(pieces),
+                             events={k: sum(1 for e in events if e["kind"] == k)
+                                     for k in ("ENDPOINT", "BARGE", "BACKCHANNEL")},
+                             totals=totals, episodes=episodes))
     return rows
 
 
@@ -310,13 +349,48 @@ def main():
     ap.add_argument("--student", default="bench-results/student-l4-60/student.pt")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None, help="write per-capture episodes here")
+    ap.add_argument("--policies", default="level",
+                    help="comma-separated barge policies to compare: level,edge,edge+gate")
+    ap.add_argument("--gate-db", type=float, default=-50.0,
+                    help="agent-audible bar for edge+gate (the product's barge_gate_db)")
+    ap.add_argument("--gate-lookup", type=int, default=0,
+                    help="frames the gate looks back; 0 = the firing frame (Rust/TS)")
     ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
     if args.selfcheck:
         return selfcheck()
 
+    policies = [p.strip() for p in args.policies.split(",") if p.strip()]
+    bad = set(policies) - {"level", "edge", "edge+gate"}
+    if bad:
+        sys.exit(f"unknown --policies {sorted(bad)}; choose level, edge, edge+gate")
+
     rows = analyze(args.shards, Path(args.wavs).expanduser(), args.events,
-                   args.student, args.device)
+                   args.student, args.device, policies=policies,
+                   gate_db=args.gate_db, gate_lookup=args.gate_lookup)
+
+    if len(policies) > 1:
+        print("| policy | BARGE | real | false | missed | harmful | "
+              "early | late | bc_ok | bc_intr |")
+        print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for pol in policies:
+            pr = [r for r in rows if r["policy"] == pol]
+            t = {n: sum(r["totals"][n] for r in pr) for n in LABELS}
+            print(f"| {pol} | {sum(r['events']['BARGE'] for r in pr)} | "
+                  f"{t['real_barge']} | {t['false_barge']} | {t['missed_barge']} | "
+                  f"{t['false_barge'] + t['missed_barge']} | "
+                  f"{t['early_cut_in']} | {t['late_endpoint']} | {t['bc_ok']} | "
+                  f"{t['bc_intrusive']} |")
+        if args.out:
+            Path(args.out).write_text(json.dumps(dict(
+                policies={pol: dict(
+                    rows=[r for r in rows if r["policy"] == pol],
+                    totals={n: sum(r["totals"][n] for r in rows
+                                   if r["policy"] == pol)
+                            for n in LABELS})
+                    for pol in policies}), indent=1))
+        return
+
     totals = {name: sum(r["totals"][name] for r in rows) for name in LABELS}
     print(f"captures {len(rows)}, seconds {sum(r['seconds'] for r in rows):.0f}")
     print("| capture | s | speech | pieces | ENDPOINT | BARGE | BC | "
