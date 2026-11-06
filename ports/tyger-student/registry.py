@@ -60,6 +60,13 @@ HEADS = (
     # the template for every decision point we add from here on.
     Head("hold", "noul", 1, ("false", "true"),
          "corpus:hold_ch0", "bce", {}),
+    # TURN_GRAB: the caller starts a turn after the agent stopped. `yield` cannot
+    # answer this (it is trained to fire while the agent talks: on 300 Open Yap
+    # handoffs <=600 ms its peak is <0.30 on 86% of the ones we miss), and the
+    # state head alone fires 20x/min. `bot_ch0` is the corpus's Beginning-of-Turn
+    # label -- ~3.4 positives per 3-minute session, hence the weight.
+    Head("turn_grab", "noul", 1, ("false", "true"),
+         "corpus:bot_ch0", "bce", {}, pos_weight=25.0),
 )
 
 

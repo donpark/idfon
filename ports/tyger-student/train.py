@@ -207,7 +207,9 @@ def selfcheck():
         hold = (torch.sigmoid(t_outs["hold"][0, :, 0]) > 0.5).numpy().astype(np.int8)
     frames = {"hu": hu.numpy(), "ha": ha.numpy(), "energy": energy.numpy(),
               "prev_state": prev_state.numpy(), "teacher": teacher}
-    labels = {"hold_ch0": hold}
+    bot = torch.zeros(T)                 # synthetic Beginning-of-Turn positives for the turn_grab head
+    bot[::40] = 1.0
+    labels = {"hold_ch0": hold, "bot_ch0": bot}
     with tempfile.TemporaryDirectory() as d:
         save_shard(os.path.join(d, "s1.npz"), "s1", frames, labels)
         save_shard(os.path.join(d, "s2.npz"), "s2", frames, labels)
@@ -219,6 +221,7 @@ def selfcheck():
         for k in FRAME_KEYS:
             assert np.array_equal(f2[k], np.asarray(frames[k], dtype=f2[k].dtype)), k
         assert np.array_equal(l2["hold_ch0"], hold)
+        assert float(np.asarray(l2["bot_ch0"]).sum()) == float(bot.sum())
 
         # 3. the seam contract: 8 slots, probs where the rules expect probs
         outs, _ = model(hu[:W][None], ha[:W][None], energy[:W][None], prev_state[:W][None])
@@ -228,9 +231,9 @@ def selfcheck():
 
         # 4. a registry entry whose source is declared but unwired must fail loudly
         try:
-            model.targets(torch.zeros(1, W, 8), {"hold_ch0": torch.zeros(1, W)})
+            model.targets(torch.zeros(1, W, 8), {"hold_ch0": torch.zeros(1, W), "bot_ch0": torch.zeros(1, W)})
             extra = Student(HEADS + (Head("mood", "noul", 1, ("false", "true"), "outcome:mood", "bce", {}),))
-            extra.targets(torch.zeros(1, W, 8), {"hold_ch0": torch.zeros(1, W)})
+            extra.targets(torch.zeros(1, W, 8), {"hold_ch0": torch.zeros(1, W), "bot_ch0": torch.zeros(1, W)})
             raise AssertionError("unwired source did not raise")
         except NotImplementedError:
             pass
