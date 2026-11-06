@@ -1,0 +1,14 @@
+{
+  "originHash" : "707e3f061da47ea4fcd09f94f4207c20d796baa5500a550195452532f5806d6a",
+  "pins" : [
+    {
+      "identity" : "fluidaudio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/donpark/FluidAudio",
+      "state" : {
+        "revision" : "2ad9b4225769a9f644cee1995809918fb0fe2d27"
+      }
+    }
+  ],
+  "version" : 3
+}
