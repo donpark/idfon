@@ -692,14 +692,16 @@ comparison runs each as if enabled.
 
 Readings. Edge-triggering is the free win on these labels: 57 → 32 events,
 harmful outcomes 39 → 37, and it catches two more real floor-takes (2 → 4). The
-audibility gate only helps when its lookback matches the decision text's "within
-320 ms": at the landed code's firing-frame check it removes 26 of the 32 edge
-events but loses 2 of the 4 real catches, leaving harmful outcomes at the
-baseline 39. A 320 ms lookback keeps all 4 real catches at 14 events. The
-label's `missed_barge` counts floor-takes after the agent has stopped, where a
-barge action has nothing to stop, so it cannot adjudicate the gate's real
-acceptance (strict-overlap catch) — step 1's audio audit still decides. This is
-the definition gap the section above names, now with a number on it.
+audibility gate does **not** improve on edge at either lookback: the landed
+firing-frame check removes 26 of the 32 edge events but loses 2 of the 4 real
+catches, leaving harmful outcomes at the baseline 39; a 320 ms lookback keeps
+all 4 real catches but lands at 14 events and the same harmful 37 as edge
+alone. So the gate reduces event counts without reducing harmful outcomes —
+the plan's kill criterion — and stays default-off. Its real acceptance
+(strict-overlap catch) is not measured by these labels: `missed_barge` counts
+floor-takes after the agent has stopped, where a barge action has nothing to
+stop. Step 1's audio audit still decides. This is the definition gap the
+section above names, now with a number on it.
 
 The comparison is an event-stream approximation: filtering happens after the
 rules replay, so the rules' internal state evolves as if the suppressed barge
