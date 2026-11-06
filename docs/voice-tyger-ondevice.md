@@ -1323,6 +1323,29 @@ survives `reset()`, drifting +1 frame per restart); batch both ears (bit-identic
 39% cheaper than two calls); `prompt_id` is not in the English manager's contract; and
 `cache_channel` depth must come from the artifact (42), not the shipping metadata.
 
+**App-side wiring (2026-11-05, #132): default off behind `IDFON_TURN_PREFIX`.** The
+turn runtime takes a `TurnPrefixModel` in place of the cut encoder: both ears are one
+cache-aware 2-slot prediction per 320 ms hop, and the cache depth, layer count, mel
+window and tap rows per chunk come from the artifact's model description (the sidecar's
+`cache_channel_shape` must agree with it, so the 70-vs-42 metadata defect cannot load).
+`prompt_id` is read from the prefix export's `metadata.json` (declared only for
+`--prefix-only` exports) and is never defaulted — no declared value fails the load. A
+rules reset restarts the heads only; the audio streams survive, and the tap frame origin
+is derived from the audio clock (fed frames), not from a row counter, so it cannot drift
+across a restart. The artifact lives in a `prefix/` child of the model root
+(`<store>/prefix` on iOS, `bench-results/prefix` on mac) beside the cut tier's files;
+absent, ambiguous or malformed → today's cut, with the reason in the diag log.
+
+Tests (`ports/tyger-swift/Tests/TygerVoiceTests/`): `TurnPrefixTests` — one 2-slot call
+is bit-exact to two batch-1 calls per ear and per row; the prefix tap is bit-exact to the
+24-layer 320 ms tap (`max|d| 0.0`) through the app's streaming mel, including the
+shipping 2-slot artifact; the runtime assertion that cache depth/framing came from the
+artifact; the sidecar/prompt refusals; the origin across a heads reset and a stream
+restart; and the streaming mel reproduces the whole-signal extractor row for row.
+`TurnRuntimeGoldenTests` pins the flag-off (cut) 8-vectors bit-for-bit on the runtime
+fixture. Not measured: iPhone ANE scheduling/thermals and the first-decision latency
+(the first chunk needs its full 41-row window, so it lands one hop after a stream start).
+
 ### The 320 refit and a turn-purpose prefix (2026-11-05, #132)
 
 **Verdict first: the refit is a wash, not a rescue.** Re-targeting the `l4-streaming`

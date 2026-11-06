@@ -76,14 +76,18 @@ def example_inputs(pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560,
 
 
 def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL,
-             batch: int = 1, depth: int = 24):
+             batch: int = 1, depth: int = 24, prefix_only: bool = False):
     """The fields `StreamingNemotronAsrManager` reads; the cache depth is the artifact's.
 
     The earlier 70-vs-42 mismatch was `cache_channel_shape[2]` (70, the 56/0 pass's
     value, shipped beside a 42-deep 42/13 artifact). It must equal the encoder's
-    declared input depth, so it is derived here, not copied from the base tier."""
+    declared input depth, so it is derived here, not copied from the base tier.
+
+    `prompt_id` is declared only for prefix (turn-path) exports: the six-input graph
+    needs it, the English manager never supplies one, and the app's prefix loader
+    refuses to invent 101 — it reads this field. The ASR metadata is unchanged."""
     cfg = model.config
-    return {
+    meta = {
         "model": model_id,
         "sample_rate": SR,
         "mel_features": 128,
@@ -99,6 +103,9 @@ def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL,
         "decoder_layers": int(cfg.num_decoder_layers),
         "encoder_dim": 1024,
     }
+    if prefix_only:
+        meta["prompt_id"] = int(cfg.default_prompt_id)
+    return meta
 
 
 def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=False,
@@ -167,7 +174,7 @@ def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=
     path = out_dir / f"encoder_tap_{tag}.mlpackage"
     ml.save(str(path))
     size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-    meta = metadata(model, tier, pass_cfg.left, model_id, batch, depth)
+    meta = metadata(model, tier, pass_cfg.left, model_id, batch, depth, prefix_only)
     meta["prefix_only"] = prefix_only
     (out_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
     print(f"saved {path}  {size/1e6:.1f} MB ({size} bytes)")
