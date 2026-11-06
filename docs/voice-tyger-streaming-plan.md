@@ -424,6 +424,120 @@ coremltools' own (a two-line torch quantizer lands cos 0.978–0.982 against the
 it is not a same-weights reference), which is exactly why the refit featurizes through the
 artifact.
 
+#### `encoded` parity at 42/13: the graph is right, the comparison was not (measured 2026-11-06, #132)
+
+The bundle-swap run reported this export's `encoded` at cos **0.044 / 0.609 / 0.733 / 0.732**
+against the multilingual bundle's encoder and +130 word edits vs theirs. That read as "the
+graph may be wrong past the tap". It is not: at 42/13 the graph reproduces its own torch
+pass to **6.3e-5** (`encoded`) and **1.6e-4** (`tap_l4`) in fp32. The gap came from three
+comparison errors and one real contract difference, in that order.
+
+**The gate.** `ports/tyger-student/encoded_gate.py` runs the package the way the app does —
+one 65-mel window per call, caches threaded, `cache_len` seeded 1, prompt from the model —
+and scores `encoded`, `tap_l4` and every layer's `cache_channel` against the torch wrapper
+at the same pass and tier, with per-bucket p50/p05/min, a row-shift scan and the worst rows.
+`tools/asr-encoded-parity/compare.swift` runs two Core ML encoders on identical mel frames,
+each on its own caches (the corrected form of `asr-bundle-swap --compare`). Fixture: the
+20 s runtime channel, 35 chunks, prompt 101 (0 for the bundle runs); session rows from
+`d622d1e3…`.
+
+**Table 1 — our 42/13 artifact vs our own torch wrapper** (245 rows; warm = chunks ≥ 6).
+
+| artifact | rows/call | `encoded` cos p50 | p05 | min | max|d| | `tap_l4` p05 |
+| --- | --: | --: | --: | --: | --: | --: |
+| fp32, keep-context (the tap pass) | 8 | 1.00000000 | 1.00000000 | 0.99999999 | 3.0e-5 | 1.00000000 |
+| fp16, keep-context | 8 | 0.99924683 | 0.99829260 | 0.83548893 | 0.136 | 0.99963789 |
+| fp16+int8w, keep-context (**the shipped form**) | 8 | 0.93050384 | 0.66061825 | 0.07529544 | 5.94 | 0.95952164 |
+| fp32, drop-context | 7 | 1.00000000 | 1.00000000 | 0.99999996 | 6.3e-5 | 1.00000000 |
+| fp16, drop-context | 7 | 0.99909055 | 0.99525606 | 0.74256288 | 0.512 | 0.99961570 |
+| fp16+int8w, drop-context | 7 | 0.91400947 | 0.58658979 | 0.14189750 | 4.80 | 0.95927474 |
+
+Graph-level: exact in fp32 — **not a graph bug**. Precision-level: fp16 is fine (p05
+0.998), **naive int8 weights are not** (p05 0.66, rows whose norm jumps 1.2 → 12). The
+recorded "cos_min 0.07 against its own int8 reference" is this int8 arm, not a reference
+mismatch — re-scored against fp32 it is 0.075 again.
+
+**Table 2 — where the int8 error lands** (12 chunks, fp32 wrapper; the projector isolated by
+quantizing only it).
+
+| arm | pre-projector hidden cos p05 / min | `encoded` p05 / min | max|d| |
+| --- | --: | --: | --: |
+| hidden perturbed by 1% of its mean | 0.999992 / 0.999990 | 0.995848 / 0.887983 | 9.7e-3 |
+| int8 projector only | 1.000000 / 1.000000 | 0.978003 / 0.195491 | 3.0e-2 |
+| int8 encoder only | 0.977327 / 0.930429 | 0.471059 / −0.849914 | 4.03 |
+| int8 encoder + projector | 0.977327 / 0.930429 | 0.455672 / −0.815947 | 4.01 |
+
+The projecting head is **not chaotically sensitive**: 1% hidden noise costs 0.4% of
+`encoded` cosine. It *is* a cancellation-heavy projection (output rows ~1.2 in norm from
+hidden ~220), so the encoder's int8 grid (hidden cos 0.977) lands at cos 0.47 on `encoded`.
+The tap at layer 4 never sees it because the projection sits above it. The fix is a
+quantization recipe judged on `encoded` (exemptions/QAT, per #132's rule), not the graph.
+
+**Table 3 — our encoder vs the published bundle encoder**, identical mel, manager seed,
+35 chunks. The bundle is the same checkpoint: `metadata.json` names
+`nvidia/nemotron-3.5-asr-streaming-0.6b`, and its fp16 tensors match torch at cos
+0.9999995 (fp16 rounding only).
+
+| our artifact | rows/call, cache | `encoded` warm p50 / p05 | min | `cache_channel` cos |
+| --- | --- | --: | --: | --: |
+| fp16, keep | 8, +8 | 0.8635 / 0.5018 | 0.3156 | 0.69–0.89 |
+| fp16+int8w, keep (shipped) | 8, +8 | 0.9032 / 0.5013 | 0.3256 | 0.72–0.87 |
+| fp16, drop | 7, +7 | 0.9556 / 0.8740 | 0.7423 | 0.94–0.97 |
+| fp16+int8w, drop | 7, +7 | 0.9832 / 0.9115 | 0.5218 | 0.97–0.98 |
+
+**The real difference: the published graph keeps 7 rows per call, ours 8.** Their MIL declares
+the same six inputs and `encoded [1,1024,7]`, but it slices the overlap row off *before* the
+layer stack: 49 attention keys (42 cache + 7 current), `cache_len_out = min(cache_len + 7,
+42)`. Ours keeps that row as an extra query and an extra key and caches it, so the cache
+grows +8 per call and the overlap frame is attended twice. `--drop-context-row` drops it
+before the stack: the cache trajectories then match exactly (8/15/22/… vs 9/17/25/…), and in
+torch the two framings differ by `encoded` cos p50 **0.872** / p05 0.172 and `tap_l4`
+0.9988 / 0.9784 — the framing alone is a 0.85-`encoded`-sized lever.
+
+The remaining 1.7% is their conversion, not ours: the published encoder stores many
+conv/linear weights as int8 affine dequantize (some palettized) and pads the mel offline
+(`[2,1,2,1]` → 9 conv rows, keep rows 2–8); matching its precision class moves us closer
+(0.956 → 0.983), which is consistent with precision, not geometry. Their quantizer was not
+reproduced, so the last 1.7% is not attributed further.
+
+**What the old comparison got wrong** (reproduced): `asr-bundle-swap --compare` seeded
+`cache_len = 0` (the manager seeds 1), ran only 4 chunks — the cold-start transient; the
+42/13 cache fills at 6 — and fed our 8-row cache to their 7-row graph. Corrected, same
+artifact: 4 chunks/seed 0 → 0.886 / 0.840 / 0.861 / 0.391 per chunk; 35 chunks/seed 1 →
+warm p50 0.903. The recorded 0.044 / 0.609 / 0.733 / 0.732 is not exactly reproducible (the
+probe did not keep its mel file, and its four chunks came from a call capture rather than
+this fixture), but the setup error dominates any audio choice.
+
+**Shipping consequence.** (1) `encoded` from the naive-int8 artifact is **not numerically
+interchangeable** with any fp32/fp16 encoder of the same weights (p05 0.66, min 0.075), even
+though it transcribes; if the encoder is to feed their decoder, ship fp16 (1.18 GB, larger
+than their 564 MB quantized bundle) or an int8 recipe validated on `encoded`. (2)
+`--drop-context-row` is the drop-in fix (p50 0.983 at 593 MB), but it is **not free**: it
+moves `tap_l4` (p50 0.9988 / p05 0.978 between framings; vs the stored 56/0 shards the 42/13
+tap p50 goes 0.968 → 0.969 at int8, or 0.992 at fp16), so the adapter needs a 42/13
+re-gate, and
+it changes the **layers 0–3 prefix** (the row is dropped before layer 0): a 560 ms call
+releases 7 rows not 8, a 320 ms call 4 not 5, and the prefix caches change — any prefix
+artifact must be re-exported and re-gated with it. The 56/0 reference pass and its 1.44e-3
+tap gate are untouched: the flag defaults off and only the 42/13 export opts in.
+
+Reproduce (the bundle's encoder folder is public; download it once):
+
+```sh
+PY=ports/tyger-student/.venv/bin/python
+$PY ports/tyger-student/encoded_gate.py \
+  --artifact bench-results/asr-encoded-parity/encoder_tap_42-13_fp16_int8w_r7.mlpackage \
+  --reference fp32 --drop-context-row        # table 1/2 (add --reference int8-enc|int8-all)
+$PY tools/asr-bundle-swap/mels.py --wav <capture-16k-mono.wav> \
+  --out bench-results/asr-encoded-parity/mels.f32 --chunks 35
+swift tools/asr-encoded-parity/compare.swift \
+  --a <bundle>/multilingual/560ms/encoder.mlmodelc \
+  --b bench-results/asr-encoded-parity/encoder_tap_42-13_fp16_int8w_r7.mlpackage \
+  --mels bench-results/asr-encoded-parity/mels.f32 --prompt 0
+$PY ports/tyger-student/export_asr_tap.py --export --pass shipping --precision fp16 --int8 \
+  --drop-context-row --out bench-results/asr-encoded-parity
+```
+
 ### Phase 3 — the tyger experience (integration)
 
 - `TurnTakerSetting.tyger` selects the streaming pair (Nemotron streaming ASR +

@@ -151,11 +151,17 @@ class StreamingTapEncoder(nn.Module):
     `batch` stacks independent streams (independent caches); `depth` runs only the
     first layers, with `prefix_only` dropping `encoded` and the prompt projector.
     The tap is the same tensor either way: layers above the tap cannot affect it.
+
+    `drop_context` selects the row framing. False keeps the overlap (context) row as
+    an attention query/key and caches it, matching the HF windowed pass the tap
+    shards record (8 rows, cache +8/call; row 0 is dropped from the outputs only).
+    True drops it before the stack, which is the published FluidAudio conversion's
+    contract (7 rows, cache +7/call) -- see `docs/voice-tyger-streaming-plan.md`.
     """
 
     def __init__(self, model, pass_cfg: PassConfig = REFERENCE, tap_index: int = 4,
                  tier: Tier = TIER_560, batch: int = 1, depth: int = 24,
-                 prefix_only: bool = False):
+                 prefix_only: bool = False, drop_context: bool = False):
         super().__init__()
         self.model = model
         self.enc = model.encoder
@@ -166,9 +172,12 @@ class StreamingTapEncoder(nn.Module):
         self.batch = batch
         self.depth = depth
         self.prefix_only = prefix_only
+        self.drop_context = drop_context
+        self.rows = tier.chunk_frames - (1 if drop_context else 0)
+        assert not drop_context or self.rows == tier.keep, (self.rows, tier.keep)
         assert self.enc.config.num_hidden_layers == 24
         assert 1 <= tap_index <= depth <= self.enc.config.num_hidden_layers, (tap_index, depth)
-        probe = torch.zeros(1, tier.chunk_frames, self.enc.config.hidden_size)
+        probe = torch.zeros(1, self.rows, self.enc.config.hidden_size)
         self.register_buffer("pos_emb", self.enc.encode_positions(probe, cached_frames=self.cache_size))
         eye = torch.eye(self.model.config.num_prompts)
         self.register_buffer("prompt_eye", eye)
@@ -181,13 +190,13 @@ class StreamingTapEncoder(nn.Module):
         # fold int64 ranges into int32 constants; revisit if the frontend learns to.
         g = pass_cfg.group
         left_blocks = self.cache_size // g
-        q_idx = torch.arange(tier.chunk_frames, dtype=torch.int64)
-        kidx = torch.arange(self.cache_size + tier.chunk_frames, dtype=torch.int64)
+        q_idx = torch.arange(self.rows, dtype=torch.int64)
+        kidx = torch.arange(self.cache_size + self.rows, dtype=torch.int64)
         self.register_buffer("key_group", (kidx // g).to(torch.int32))
         self.register_buffer("query_group", ((self.cache_size + q_idx) // g).to(torch.int32))
         qg = (self.cache_size + q_idx) // g
         q_lo = (qg - left_blocks).clamp(min=0) * g
-        q_hi = (qg * g + g - 1).clamp(max=self.cache_size + tier.chunk_frames - 1)
+        q_hi = (qg * g + g - 1).clamp(max=self.cache_size + self.rows - 1)
         self.register_buffer("query_lo", q_lo.to(torch.float32))
         self.register_buffer("query_hi", q_hi.to(torch.float32))
 
@@ -217,7 +226,7 @@ class StreamingTapEncoder(nn.Module):
         Split out of `_attention` so the geometry is assertable without a model: the 42/13
         defect was a mask that no test compared against the documented block pattern.
         """
-        C, T = self.cache_size, self.tier.chunk_frames
+        C, T = self.cache_size, self.rows
         kv = torch.arange(C + T, device=self.query_lo.device, dtype=torch.float32)[None, None, :]
         cl = cache_len.reshape(-1, 1, 1).float()  # [B,1,1]; per-stream cache length
         mask = (
@@ -229,7 +238,7 @@ class StreamingTapEncoder(nn.Module):
         return mask[0] if self.batch == 1 else mask
 
     def _attention(self, attn, h, cache_ch, cache_len):
-        C, T, B = self.cache_size, self.tier.chunk_frames, self.batch
+        C, T, B = self.cache_size, self.rows, self.batch
         heads, kv_heads, hd_ = attn.config.num_attention_heads, attn.config.num_key_value_heads, attn.head_dim
         keys = torch.cat([cache_ch, h], dim=1)  # [B,C+T,D]
         q = attn.q_proj(h).view(B, T, heads, hd_).transpose(1, 2)
@@ -265,6 +274,8 @@ class StreamingTapEncoder(nn.Module):
 
     def forward(self, mel, mel_length, cache_channel, cache_time, cache_len, prompt_id):
         h = self._subsample(mel, mel_length) * self.enc.input_scale
+        if self.drop_context:  # fluid framing: the overlap row is not a query or a key
+            h = h[:, 1:]
         new_ch, new_t = [], []
         tap = None
         for i, block in enumerate(self.enc.layers[: self.depth]):
@@ -282,18 +293,19 @@ class StreamingTapEncoder(nn.Module):
                 tap = h
         cache_channel_out = torch.stack(new_ch, dim=1)
         cache_time_out = torch.stack(new_t, dim=1)
-        tap_rows = tap[:, 1:].transpose(1, 2)  # drop the context row -> `keep` new frames
-        cache_len_out = torch.clamp(cache_len.float() + self.tier.chunk_frames,
+        # drop the context row -> `keep` new frames (already dropped in fluid framing)
+        tap_rows = (tap if self.drop_context else tap[:, 1:]).transpose(1, 2)
+        cache_len_out = torch.clamp(cache_len.float() + self.rows,
                                     max=self.cache_size).to(torch.int32)
         if self.prefix_only:
             # layers above the tap cannot change it; stopping here is exact, not a
             # re-encode. Only the prefix's own caches are needed by the next call.
             return tap_rows, cache_channel_out, cache_time_out, cache_len_out
 
-        kept = h[:, 1:]
+        kept = h if self.drop_context else h[:, 1:]
         onehot = self.prompt_eye.index_select(0, prompt_id.to(torch.int32))
         fused = self.model.prompt_projector(
-            torch.cat([kept, onehot[:, None, :].expand(-1, self.tier.keep, -1)], dim=-1)
+            torch.cat([kept, onehot[:, None, :].expand(-1, self.rows, -1)], dim=-1)
         )
         lengths = mel_length
         for _ in range(3):
