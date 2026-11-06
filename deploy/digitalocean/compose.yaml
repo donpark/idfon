@@ -68,6 +68,8 @@ services:
       - ${IDFON_FILES_MAX_UPLOAD_MB:-2}
       - --files-writes-per-minute
       - ${IDFON_FILES_WRITES_PER_MINUTE:-60}
+      - --files-read-bytes-per-second
+      - ${IDFON_FILES_READ_BYTES_PER_SECOND:-1048576}
       - --files-quota-mb
       - ${IDFON_FILES_QUOTA_MB:-10240}
       - --files-max-expiry-days

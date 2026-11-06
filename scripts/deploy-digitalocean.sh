@@ -28,6 +28,10 @@
 #   IDFON_RELAY_ADMIN_TOKEN  ops bearer for relay-auth (generated if unset)
 #   IDFON_RELAY_OPEN      1 = deliberately deploy an OPEN relay; without any
 #                         auth config above the deploy refuses (fail-closed)
+#   IDFON_RELAY_RX_BYTES_PER_SECOND  per-connection relay cap (default: the
+#                         value in relay/config.toml)
+#   IDFON_RELAY_RX_BURST_BYTES       burst allowance for that cap (default: the
+#                         value in relay/config.toml)
 #   IDFON_FILES_ALIAS      top-level namespace(s) also served as files (talk-radio)
 #   IDFON_EDGE_IMAGE       default ghcr.io/donpark/idfon-edge:latest
 set -euo pipefail
@@ -63,6 +67,9 @@ RELAY_AUTH_TOKEN="${IDFON_RELAY_AUTH_TOKEN:-}"
 RELAY_AUTH_MODE="${IDFON_RELAY_AUTH:-0}"
 RELAY_ISSUERS="${IDFON_RELAY_ISSUERS:-}"
 RELAY_ADMIN_TOKEN="${IDFON_RELAY_ADMIN_TOKEN:-}"
+# Per-connection caps (bytes). Empty keeps the value in relay/config.toml.
+RELAY_RX_BYTES_PER_SECOND="${IDFON_RELAY_RX_BYTES_PER_SECOND:-}"
+RELAY_RX_BURST_BYTES="${IDFON_RELAY_RX_BURST_BYTES:-}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -247,10 +254,27 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
   else
     die "refusing to deploy an unauthenticated relay: set IDFON_RELAY_AUTH=1 (with IDFON_RELAY_ISSUERS), IDFON_RELAY_ALLOWLIST, IDFON_RELAY_AUTH_URL, or IDFON_RELAY_TOKEN (or keep the token in ~/.idfon/relay-token), or pass IDFON_RELAY_OPEN=1 for an open relay"
   fi
+  optional_u64() {
+    [ -z "$2" ] && return 0
+    case "$2" in *[!0-9]*) die "$1 must be a positive integer (bytes), got '$2'" ;; esac
+  }
+  optional_u64 IDFON_RELAY_RX_BYTES_PER_SECOND "$RELAY_RX_BYTES_PER_SECOND"
+  optional_u64 IDFON_RELAY_RX_BURST_BYTES "$RELAY_RX_BURST_BYTES"
   RELAY_CONFIG="$(mktemp)"
   awk -v line="$ACCESS_LINE" \
     '{ if ($0 ~ /^access = /) print line; else print }' \
     "$DEPLOY/relay/config.toml" > "$RELAY_CONFIG"
+  # Caps are tunable from .env so a value change is a redeploy, not an image
+  # rebuild. The config file's values are the fallback.
+  for pair in "bytes_per_second:$RELAY_RX_BYTES_PER_SECOND" \
+    "max_burst_bytes:$RELAY_RX_BURST_BYTES"; do
+    key=${pair%%:*}
+    value=${pair#*:}
+    [ -n "$value" ] || continue
+    awk -v key="$key" -v value="$value" \
+      '$1 == key { print key " = " value; next } { print }' \
+      "$RELAY_CONFIG" > "$RELAY_CONFIG.tmp" && mv "$RELAY_CONFIG.tmp" "$RELAY_CONFIG"
+  done
   ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay /srv/idfon-edge/relay-auth/data"
   scp $SSH_OPTS "$RELAY_CONFIG" "root@$PUBLIC_IP:/srv/idfon-edge/relay/config.toml" >/dev/null
   [ "$RELAY_CONFIG" != "$DEPLOY/relay/config.toml" ] && rm -f "$RELAY_CONFIG"
@@ -301,7 +325,7 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
   fi
   ssh $SSH_OPTS "root@$PUBLIC_IP" \
     "cd /srv/idfon-edge && docker compose $COMPOSE_FILES restart iroh-relay >/dev/null 2>&1"
-  info "iroh-relay restarted with the current access policy"
+  info "iroh-relay restarted with the current access policy and limits"
 fi
 
 # --- verify ----------------------------------------------------------------
