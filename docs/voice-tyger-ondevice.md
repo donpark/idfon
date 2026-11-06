@@ -1415,6 +1415,137 @@ exactly one package with 2 slots / 4 layers / depth 42 / 32+9 mel / 4 tap rows, 
 loads `TurnPrefixModel` from that tree. Run it as documented in the test file
 (`IDFON_PREFIX_PACK=<dry-run dir>`).
 
+### What the ASR bundle swap changes (2026-11-05, #132/#185)
+
+**The swap is forced by the licence, and it moves words.** Our tiers are NVIDIA 3.5
+exports under OpenMDW-1.1, but the decoder/joint/tokenizer are downloaded at runtime,
+and only the 3.5 multilingual bundle carries the same grant as the tiers. The English
+bundle that ships today declares NVIDIA's Open Model License (see
+`tyger-models/LICENSE.md`). Same 560 ms tier, same architecture — different decoder
+files, so the transcripts are a different product until measured. This is that
+measurement; no app, threshold, model or fork change.
+
+| | today | after the swap |
+|---|---|---|
+| bundle | `FluidInference/nemotron-speech-streaming-en-0.6b-coreml/560ms` | `FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML/multilingual/560ms` |
+| licence | NVIDIA Open Model License | OpenMDW-1.1 |
+| on disk | 597 MB (installed) | 633 MiB / 664 MB (download) |
+| manager | `StreamingNemotronAsrManager` | `StreamingNemotronMultilingualAsrManager` |
+| language | none (no prompt input) | `setLanguage("en-US")` → `prompt_id` 0; also run with `auto` → 101 |
+| vocab | 1,024 | 13,087 |
+
+**Method.** The same three captured calls the tap work replays (mic channel — the ASR
+never sees the agent ear), 352 s of audio, fed through each real manager in 682-frame
+buffers paced on a device clock at 1.00x, same 560 ms tier, default settings. Partials
+are recorded with the audio time at delivery, so cadence is measured in audio time, not
+in host load. `tools/asr-bundle-swap/` (`run.sh`).
+
+**No reference transcripts exist for these calls** — `corpus/voice-interactions` has
+timed transcripts but no audio, and the captures have audio but no transcript. So
+nothing below is a WER, and no difference is called worse: the measurement is how far
+the words move and how the partial cadence moves.
+
+| call | bundle | prompt | words | sub/ins/del vs en | partials | gap p50 | gap p95 | text changes | added/update | rewrites | first partial | final jump |
+|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 2026-10-25T23:13:14Z (112 s) | en | – | 145 | 0/0/0 | 73 | 0.55 s | 6.68 s | 73 | 9 ch | 0 | 1.15 s | +6 ch |
+| | ml | 0 | 126 | 11/2/21 | 70 | 0.55 s | 6.85 s | 69 | 8 ch | 0 | 0.60 s | +10 ch |
+| | ml-auto | 101 | 123 | 8/2/24 | 67 | 0.55 s | 7.29 s | 66 | 9 ch | 0 | 0.60 s | +10 ch |
+| | staged | 0 | 110 | 16/6/41 | 52 | 0.55 s | 7.84 s | 51 | 11 ch | 0 | 0.60 s | +12 ch |
+| 2026-10-26T20:17:43Z (89 s) | en | – | 121 | 0/0/0 | 59 | 0.55 s | 5.20 s | 59 | 9 ch | 0 | 1.15 s | +0 ch |
+| | ml | 0 | 118 | 3/0/3 | 63 | 0.55 s | 5.53 s | 62 | 9 ch | 0 | 0.60 s | +0 ch |
+| | ml-auto | 101 | 116 | 3/0/5 | 64 | 0.55 s | 5.47 s | 63 | 9 ch | 0 | 0.60 s | +0 ch |
+| | staged | 0 | 103 | 6/3/21 | 47 | 0.58 s | 6.60 s | 46 | 12 ch | 0 | 0.60 s | +0 ch |
+| 2026-10-26T21:13:38Z (151 s) | en | – | 230 | 0/0/0 | 105 | 0.55 s | 6.73 s | 105 | 10 ch | 0 | 1.15 s | +0 ch |
+| | ml | 0 | 225 | 9/3/8 | 103 | 0.55 s | 6.73 s | 102 | 10 ch | 0 | 0.60 s | +0 ch |
+| | ml-auto | 101 | 225 | 9/3/8 | 103 | 0.55 s | 6.73 s | 102 | 10 ch | 0 | 0.60 s | +0 ch |
+| | staged | 0 | 222 | 22/8/16 | 103 | 0.55 s | 6.73 s | 102 | 11 ch | 0 | 0.60 s | +0 ch |
+
+**Words.** The swap edits **60 words over the three calls** (34 / 6 / 20; 5-27% of a
+call's words), concentrated where the audio is already hard. Some are content-bearing:
+"for our anniversary" → "for our university", "an all included hotel in right from the
+Eiffel Tower" → "…Bran tower", "no fuck advertising" → "advertising". Others are
+trade-offs in the other direction ("you're afraid I wouldn't have a surprise" gains a
+"but" the English bundle drops). No call is clean or uniformly cleaner.
+
+**Cadence.** In the steady state it does not change: same partial rate (0.60-0.72/s vs
+0.66-0.69/s), same p50 gap of one 560 ms chunk, same append-only behaviour (0 rewrites
+in all twelve runs — no partial text is ever retracted), ~9 characters added per update
+both ways. Two things do move:
+
+- **first text arrives one chunk earlier** — 0.60 s instead of 1.15 s in every call,
+  because the multilingual manager publishes on the first chunk that yields tokens
+  while the English one waits for the second;
+- the finalize jump is occasionally larger: +10/+12 characters at `finish()` in 3 of the
+  9 non-English runs, 0 in the rest (the English bundle jumps +6 in one of three), so the
+  last partial can sit a little further from the final text.
+
+**Prompt choice.** The multilingual bundle's own default is `auto` (101); `en-US` is 0.
+Both were run. `auto` detects `en-US` on all six runs (`detectedLanguage()`) and differs
+from `en-US` by 7 / 2 / 5 words — the same order of magnitude as the bundle swap
+itself, so the language hint is worth setting explicitly rather than leaving to `auto`,
+but the default is not broken. Nothing here needs a prompt value beyond "en-US" (or
+`auto`) to behave sanely in English.
+
+Example, the 89 s call (English bundle, then multilingual at prompt 0):
+
+- en: *Hey, how are you good? How's your day for our F have a S okay but I have I have
+  the best surprise for you for on our anniversary … it's usually an espresso and a
+  cigarette …*
+- ml: *Hey, how are you good? How's your day for our That's why okay but I have I have
+  the best surprise for you for on our anniversary? Okay, so you know how you've always
+  talked about how much you want to go to Paris so for our anniversary I'm taking you on
+  a flight to Paris for an all included hotel in right from the Eiffel Tower …*
+
+#### The artifact swap: our 42/13 encoder under their multilingual decoder
+
+`stage_models.py` stages our tap export into a copy of the multilingual bundle — decoder,
+joint, tokenizer and metadata symlinked from the bundle, only `encoder/` replaced — and
+the artifact goes in **unmodified**: `prompt_id` stays a model input fed by the manager
+(no baked const, unlike `tools/asr-tap-latency/stage_models.py`, which had to bake it for
+the English manager). The prompt is live: the export's frames move when it changes
+(max|d| 0.18 between prompt 0 and 101 on one real window).
+
+**It transcribes.** The staged dir loads through `StreamingNemotronMultilingualAsrManager`
+and produces fluent English end to end, so our encoder + their decoder is a working
+pairing, and the `prompt_id` contract needs no packaging hack.
+
+**But our export is not the bundle's encoder.** On the same real mel windows (four
+560 ms chunks from one capture, identical inputs, same prompt, each model on its own
+caches) `encoded` cosine is **0.044 / 0.609 / 0.733 / 0.732** per chunk, and
+`cache_channel` 0.75 → 0.45. That matches the transcript result: staged costs **130
+word-level edits against the bundle's own encoder** (15/14/30, 7/3/18, 16/12/15) and 139
+against English — more than the bundle swap itself, and it drops the leading word of a
+call in two of three runs. Two caveats before anyone calls this an export bug: the
+same artifact's own gate already reports `encoded` cos_min 0.07 / 0.63-0.70 steady
+against *its own* int8 reference (`bench-results/asr-tap-fixed/gate_42-13_fp16_int8w.json`,
+cache drift), so this output is chaotic under small numeric differences and one cosine
+proves little; and the prompt asymmetry is larger than expected (max|d| 0.18 ours vs 7.87
+theirs) but not diagnosed here. **What is settled:** the pairing works and the prompt path
+works; whether our export should reproduce the bundle's frames closely enough to be
+interchangeable is a separate measurement (follow-up on #132), not a blocker for the
+licence-driven bundle swap.
+
+**What this does to the frozen acceptance row.** `#185`'s quote says "no ASR change (no
+WER risk)". That is now measured and wrong in one direction only: the swap *does* change
+transcripts (60 word edits over 496 words on our own three calls) and brings the first
+partial one chunk earlier. It does not change the tier, the model family or the latency
+class. The sentence to quote becomes: **the bundle id changes, not the ASR tier — expect
+transcript edits on the order of 5-27% of a call's words and an earlier first partial.**
+
+Reproduce (downloads 664 MB of bundle; the English bundle is already installed):
+
+```bash
+PY=/Users/don/dev/idfon/ports/tyger-student/.venv/bin/python \
+  tools/asr-bundle-swap/run.sh          # download, stage, both bundles + staged, diff
+PY=<venv> python tools/asr-bundle-swap/mels.py --wav <capture>.wav --out mels.f32
+tools/asr-bundle-swap/.build/release/asr-bundle-swap \
+  --compare bench-results/asr-bundle-swap/models/staged-560ms/encoder.mlmodelc,\
+bench-results/asr-bundle-swap/hf/multilingual/560ms/encoder.mlmodelc \
+  --mels bench-results/asr-bundle-swap/mels.f32
+```
+
+Host numbers (Apple Silicon macOS, not an iPhone); every run held 1.00x real time.
+
 ### The 320 refit and a turn-purpose prefix (2026-11-05, #132)
 
 **Verdict first: the refit is a wash, not a rescue.** Re-targeting the `l4-streaming`
