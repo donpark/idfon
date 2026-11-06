@@ -615,6 +615,15 @@ quantity in this work that transferred between domains unaided. For comparison,
 on live, at 4.0 and 5.3 events/min respectively: the new head wins clearly on the
 first and trades precision for reach on the second.
 
+Two things that do **not** help, measured on both domains:
+
+- **per-call percentile fitting** (`--per-call`): live 46% catch at 43% precision
+  vs 51%/43% pooled; Open Yap 32%/74% vs 38%/74%. The score scale is stable across
+  calls within a domain, so one fit per domain is enough.
+- **gating on the state head** (`state_speak ≥ 0.5`): Open Yap 38% → 25% catch with
+  precision *falling* 74% → 67%; live 49% → 18% catch, 45% → 26% precision. The
+  conjunction removes true positives and does not buy precision back.
+
 **Open.** The 30 blinded clips still adjudicate whether a "Yes" here is a floor
 claim; the head's numbers are agreement with an *audio* handoff definition, not
 with human judgement. Nothing above ships: the seam is unchanged, the head is

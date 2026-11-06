@@ -121,6 +121,8 @@ def main() -> None:
     ap.add_argument("--tols", default="5")
     ap.add_argument("--percentiles", default="90,95,99")
     ap.add_argument("--absolute", default="0.3,0.5")
+    ap.add_argument("--per-call", action="store_true",
+                    help="fit the percentile inside each call instead of the pooled domain")
     ap.add_argument("--apply-from", type=float, default=None,
                     help="also report the given absolute threshold (e.g. a percentile from another domain)")
     ap.add_argument("--selfcheck", action="store_true")
@@ -176,6 +178,17 @@ def main() -> None:
         rows.append(("applied", a.apply_from))
 
     print(f"\n  {'threshold':<12}{'events':>7}{'ev/min':>8}" + "".join(f"{'±'+str(t)+' caught':>13}{'prec':>7}" for t in tols))
+    if a.per_call:
+        for q in [float(x) for x in a.percentiles.split(",")]:
+            ev = 0; hit_ev = hit_win = 0
+            for c in per_call:
+                thr = float(np.percentile(c["bg"], q)) if len(c["bg"]) else 1.0
+                e = events_at(c["score"], thr)
+                ev += len(e)
+                a1, a2 = score_at(e, c["wins"], tols[0])
+                hit_ev += a1; hit_win += a2
+            print(f"  {'per-call p'+format(q,'g'):<12}{ev:>7}{ev/mins:>8.2f}"
+                  f"{100*hit_win/max(nwins,1):>12.0f}%{100*hit_ev/max(ev,1):>6.0f}%")
     for label, thr in rows:
         ev = sum(int(len(events_at(c["score"], thr))) for c in per_call)
         line = f"  {label+' '+format(thr, '.3f'):<12}{ev:>7}{ev/mins:>8.2f}"
