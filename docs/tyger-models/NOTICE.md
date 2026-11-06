@@ -20,6 +20,13 @@ repository: its model card and figures in
 and NVIDIA's copy of the license in
 [`licenses/OpenMDW-1.1.txt`](https://huggingface.co/nineninesix/tyger/tree/main/licenses).
 
+`prefix/` holds the turn path's encoder artifact (#132's split tier): the same
+NVIDIA tensors as `coreml/`, run only through layer 3 and exported with
+`tap_l4` and the cache outputs, at a 320 ms chunk. It is a truncation of the
+same weights — nothing retrained — and carries no `encoded` output, so it
+cannot transcribe. The turn-taker's live tier reads `hidden_states[4]` from it
+in both ears, batched; the ASR keeps its own 560 ms pass on the full encoder.
+
 `pathc/TygerStepStudent.mlpackage` is a separately trained model: the TYGER
 turn-taker's head architecture, retrained by distillation from TYGER on the
 [dualturn-otospeech-turn-taking](https://huggingface.co/datasets/anyreach-ai/dualturn-otospeech-turn-taking)

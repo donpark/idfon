@@ -6,6 +6,7 @@ Agreement, version 1.1 (OpenMDW-1.1). The full text is below. It covers:
 | Materials | License |
 | --- | --- |
 | The `coreai/`, `coreml/` and `mlx/` tiers — format exports of the TYGER chain (the Nemotron 3.5 ASR encoder + the TYGER turn-taker) | OpenMDW-1.1, NVIDIA's own grant: [`nvidia/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b), revision `ea30d66debe3740a08b573244286791d423d6b3e` |
+| `prefix/` — the 320 ms turn artifact: layers 0–3 of the same NVIDIA weights, exported by us with `tap_l4` + cache outputs (no `encoded`, so it is turn-path only) | OpenMDW-1.1, NVIDIA's own grant (same revision) |
 | `pathc/` (TYGER-Step-Student, the distilled turn heads), `manifest.json`, and this repository's documentation | OpenMDW-1.1 |
 
 NVIDIA's notices stay with its materials: see [NOTICE.md](NOTICE.md) and the
