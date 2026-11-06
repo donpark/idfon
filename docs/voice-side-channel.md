@@ -603,7 +603,17 @@ explicit choice still wins.
   documents an uncatchable iOS 27 Core ML crash after ≈1 h cumulative
   synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
   Kokoro ONNX.
-  (2026-10-25 ruling: Kokoro is out as the voice-agent mouth — whole-clip,
+  **Voice provenance (2026-11-05).** The idfon voice set ships as 256 KB `emb`
+embeddings blended from **Phonon's own stock voices** (`scripts/blend-phonon-voices.py`,
+recipes in `scripts/phonon-voice-compare.py`; parents stay out of the pack). Kokoro
+tones were the *reference* those recipes were chosen against — `phonon-voice-compare.py`
+renders a "blended Kokoro voices" section from `blend-kokoro-voices.py` — and the
+`donpark/pocket-kokoro-voices` repo is kept for that provenance only: **no Kokoro
+tensors ship in any pack**, so the voice assets are Phonon derivatives (gradium
+phonon-31m, Apache-2.0), not Kokoro derivatives. If a future voice actually blends a
+Kokoro embedding in, that changes the attribution and belongs here before it ships.
+
+(2026-10-25 ruling: Kokoro is out as the voice-agent mouth — whole-clip,
   no streaming, which the duplex loop needs. Phonon is the mouth and the
   build default; this bullet is the fallback for builds compiled without
   Phonon. Kokoro stays in the tree for possible future use cases.)
