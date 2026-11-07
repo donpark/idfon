@@ -1725,7 +1725,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // No menu: dial the station default, as before.
         Task { @MainActor in
             if await presentStationMenuIfAny() == false {
-                LiveCall.shared.dial(peer.id)
+                // A server-cascade holder greets on its own return leg; a local
+                // answered cue on top of it reads as a second audio channel.
+                LiveCall.shared.dial(peer.id, answeredCue: route?.mode != .serverCascade)
             }
         }
     }

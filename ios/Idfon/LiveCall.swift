@@ -230,6 +230,10 @@ final class LiveCall {
     /// The peer this call belongs to, kept past the state machine's reset so
     /// the quality record can be filed with the thread it describes.
     private var callPeer: String?
+    /// A server-cascade holder speaks its own greeting on the return leg; the
+    /// local "answered" cue then lands from a second path and sounds detached.
+    /// Suppressed for those calls (set per dial).
+    private var answeredCue = true
     /// The peer's stored `EndpointAddr` JSON, fetched once per call (#157).
     private var livePeerAddrs: String?
 
@@ -276,7 +280,11 @@ final class LiveCall {
             // cue and subscribe non-fatally — a failed subscribe must not tear
             // down a call we are already publishing into.
             liveTicket = ticket
-            CallTonePlayer.shared.start(.answered)
+            // The cue and the ringback share one player: suppressing the cue
+            // must still stop the loop, or the remote greeting plays under the
+            // "calling" sound and the call never sounds answered.
+            if answeredCue { CallTonePlayer.shared.start(.answered) }
+            else { CallTonePlayer.shared.stop() }
             Task {
                 if await !self.subscribe(ticket: ticket) {
                     idfonError("idfon live call: return-leg subscribe failed")
@@ -355,12 +363,13 @@ final class LiveCall {
 
     // MARK: - Caller
 
-    func dial(_ peerRef: String, show: String? = nil) {
+    func dial(_ peerRef: String, show: String? = nil, answeredCue: Bool = true) {
         Automation.mark("live: dial ref=\(peerRef)\(show.map { " show=\($0)" } ?? "")")
         guard case .idle = life.phase else {
             CallFeedback.post("A call is already in progress.")
             return
         }
+        self.answeredCue = answeredCue
         // `call_kit` channels dial through the system call UI — CallKit owns
         // the whole call lifecycle, both directions (docs/callkit-integration.md).
         // A station is not a call: skip CallKit so the listen profile (no
