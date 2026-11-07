@@ -1773,8 +1773,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidAppear(animated)
         if !stationMenuOffered, !conversation.isRoom {
             stationMenuOffered = true
-            Task { await presentStationMenuIfAny() }
+            Task { await enterStationSurface() }
         }
+    }
+
+    /// Opening a broadcast contact is tuning in, not placing a call: a menu
+    /// shows its outline and waits for a pick, a single station connects and
+    /// plays. Ordinary chats are untouched.
+    private func enterStationSurface() async {
+        guard CapabilityTickets.voiceRoute(for: peer.id)?.mode == .broadcast else { return }
+        if await presentStationMenuIfAny() { return }
+        guard case .idle = LiveCall.shared.state else { return }
+        LiveCall.shared.dial(peer.id)
     }
 
     /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the
