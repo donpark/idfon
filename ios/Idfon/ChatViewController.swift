@@ -440,6 +440,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let jumpButton = UIButton(type: .system)
     private var senderNames: [String: String] = [:]
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
+    /// #202 replay: the row last rendered as "Reading…", so a state change
+    /// reloads only the two rows that change (old + new), never the timeline.
+    private var renderedReadingID: String?
 
     // inline live-video bar (tap to expand the fullscreen call screen)
     private let videoBar = UIView()
@@ -556,6 +559,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // A rename in the person screen must be reflected when we come back.
         title = roomTitle
         titleButton.setTitle(conversation.title, for: .normal)
+        BubbleReplay.shared.onChange = { [weak self] in self?.reloadReplayRows() }
         ChatStore.shared.onPoint = { [weak self] point, _ in self?.handlePoint(point) }
         ChatStore.shared.onShow = { [weak self] show, _ in self?.handleShow(show) }
         ChatStore.shared.onScreenshot = { [weak self] request, _ in self?.handleScreenshot(request) }
@@ -571,6 +575,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         ChatStore.shared.onPoint = nil
         ChatStore.shared.onShow = nil
         ChatStore.shared.onScreenshot = nil
+        // #202: leaving the chat stops the replay — no stray voice behind a
+        // pushed screen, and a dial covering the chat ends it too.
+        BubbleReplay.shared.stop()
+        BubbleReplay.shared.onChange = nil
     }
 
     /// The artifact with `artifactId` in this conversation, or a placeholder
@@ -1435,6 +1443,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                             LiveCall.shared.dial(target, show: show)
                         }),
                     animated: true)
+            case .callTranscript(let transcript):
+                replayTapped(message: message, transcript: transcript)
             case .recording(let ticket, _, let localURL):
                 toggleRecording(messageID: message.id, ticket: ticket, localURL: localURL)
             case .file(let ticket, let name, _, let localURL):
@@ -1450,6 +1460,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func reloadRow(for messageID: String) {
         guard let row = timelineItems.firstIndex(where: { $0.id == messageID }) else { return }
         tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
+    }
+
+    /// #202 P0: tap a spoken bubble to hear it re-synthesized in the contact's
+    /// on-device voice; tap again to stop. Notices ride the call-status line.
+    private func replayTapped(message: ChatMessage, transcript: CallTranscript) {
+        let action = BubbleReplay.shared.tap(
+            messageID: message.id, role: transcript.role, text: transcript.text,
+            final: transcript.final, peerID: message.peerId,
+            callActive: LiveCall.shared.state != .idle)
+        if case .notice(let text) = action { CallFeedback.post(text) }
+    }
+
+    /// #202: reading state lands only on the rows that changed.
+    private func reloadReplayRows() {
+        if let old = renderedReadingID { reloadRow(for: old) }
+        renderedReadingID = BubbleReplay.shared.readingID
+        if let new = renderedReadingID { reloadRow(for: new) }
     }
 
     private func toggleRecording(messageID: String, ticket: String, localURL: URL?) {
@@ -1945,7 +1972,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             cell.setSender(senderHeader(for: message))
             cell.messageLabel.text = transcript.text
             cell.captionLabel.text = caption(
-                "\(transcript.role == "agent" ? "Agent" : "You") · \(transcript.final ? "spoken" : "speaking…")",
+                "\(transcript.role == "agent" ? "Agent" : "You") · \(BubbleReplay.shared.isReading(message.id) ? "Reading…" : (transcript.final ? "spoken" : "speaking…"))",
                 for: message)
             cell.setAlignment(outgoing: side(for: message))
             return cell

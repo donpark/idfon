@@ -19,6 +19,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     // message table
     private let table = NSTableView()
     private var history: [ChatMessage] = []
+    /// #202 replay: the row last rendered with Read/Stop state, so a change
+    /// reloads only the two rows that change (old + new), never the table.
+    private var renderedReadingID: String?
     private var textHeights: [String: CGFloat] = [:]
     private var lastCount = 0
 
@@ -796,11 +799,18 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     /// a mismatch clipped multi-line bubbles.
     private static let maxBubbleWidth: CGFloat = 420
 
+    /// #202: the replay button's slot beside a transcript's text (56pt button
+    /// + 8pt gap). One number for drawing and measuring — a mismatch clipped
+    /// multi-line bubbles.
+    private static let replaySlotWidth: CGFloat = 64
+
     /// Measured like `textHeight`, but uncached: a transcript snapshot mutates
     /// the same message id as it streams, so a cached height would clip.
     private func transcriptHeight(_ transcript: CallTranscript) -> CGFloat {
         let suffix = transcript.final ? "" : " …"
-        return renderedHeight("\(transcript.text)\(suffix)")
+        // The replay button takes its slot out of the text width (#202), so
+        // the measurement reserves the same number the drawing subtracts.
+        return renderedHeight("\(transcript.text)\(suffix)", reserved: Self.replaySlotWidth)
     }
 
     /// Cached bubble row height; measured from the same attributed string the
@@ -815,8 +825,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     /// Row height for `text`, measured at the width the bubble can actually
     /// draw into (`maxBubbleWidth` minus the text view's insets) — measuring
     /// at the window width gave one-line heights to three-line bubbles.
-    private func renderedHeight(_ text: String) -> CGFloat {
-        let width = min(max(view.bounds.width - 140, 120), Self.maxBubbleWidth - 20)
+    private func renderedHeight(_ text: String, reserved: CGFloat = 0) -> CGFloat {
+        let width = min(max(view.bounds.width - 140, 120), Self.maxBubbleWidth - 20) - reserved
         let size = renderText(text).boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
@@ -1084,13 +1094,25 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             // "You:" prefix.
             tv.textStorage?.setAttributedString(renderText("\(transcript.text)\(suffix)"))
             tv.translatesAutoresizingMaskIntoConstraints = false
-            bubble.addSubview(tv)
+            // #202: Read/Stop replays the turn in the contact's on-device
+            // voice (a click gesture would fight the text view's selection).
+            let replay = NSButton(title: BubbleReplay.shared.isReading(message.id) ? "Stop" : "Read",
+                                  target: self, action: #selector(replayTapped(_:)))
+            replay.bezelStyle = .rounded
+            replay.controlSize = .small
+            replay.font = NSFont.systemFont(ofSize: 11)
+            replay.identifier = NSUserInterfaceItemIdentifier(message.id)
+            replay.translatesAutoresizingMaskIntoConstraints = false
+            for view in [tv, replay] { bubble.addSubview(view) }
             NSLayoutConstraint.activate([
                 tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
                 tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
                 tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
-                tv.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                tv.trailingAnchor.constraint(equalTo: replay.leadingAnchor, constant: -8),
                 tv.heightAnchor.constraint(equalToConstant: transcriptHeight(transcript) - 16),
+                replay.widthAnchor.constraint(equalToConstant: Self.replaySlotWidth - 8),
+                replay.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                replay.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
                 bubble.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxBubbleWidth),
             ])
         }
@@ -1644,6 +1666,28 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             }))
     }
 
+    /// #202 P0: Read hears the turn re-synthesized in the contact's on-device
+    /// voice; Stop (or another bubble's Read) ends it. Notices ride the banner.
+    @objc private func replayTapped(_ sender: NSButton) {
+        guard let messageId = sender.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .callTranscript(let transcript) = message.kind else { return }
+        let action = BubbleReplay.shared.tap(
+            messageID: message.id, role: transcript.role, text: transcript.text,
+            final: transcript.final, peerID: message.peerId,
+            callActive: LiveCall.shared.state != .idle)
+        if case .notice(let text) = action { CallFeedback.post(text) }
+    }
+
+    /// #202: reading state lands only on the rows that changed.
+    private func reloadReplayRows() {
+        for id in [renderedReadingID, BubbleReplay.shared.readingID].compactMap({ $0 }) {
+            guard let row = history.firstIndex(where: { $0.id == id }) else { continue }
+            table.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: [0])
+        }
+        renderedReadingID = BubbleReplay.shared.readingID
+    }
+
     @objc private func artifactTapped(_ sender: NSButton) {
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
@@ -1661,6 +1705,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        BubbleReplay.shared.onChange = { [weak self] in self?.reloadReplayRows() }
         ChatStore.shared.onPoint = { [weak self] point, _ in self?.handlePoint(point) }
         ChatStore.shared.onShow = { [weak self] show, _ in self?.handleShow(show) }
         ChatStore.shared.onScreenshot = { [weak self] request, _ in self?.handleScreenshot(request) }
@@ -1674,6 +1719,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         ChatStore.shared.onPoint = nil
         ChatStore.shared.onShow = nil
         ChatStore.shared.onScreenshot = nil
+        // #202: leaving the chat stops the replay — no stray voice behind a
+        // pushed sheet or a closed window.
+        BubbleReplay.shared.stop()
+        BubbleReplay.shared.onChange = nil
     }
 
     /// The artifact with `artifactId` in this conversation, or a placeholder
