@@ -79,7 +79,7 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-artifacts-testing.md` | manual artifact/reference test runbook |
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
 | `live-voice.md` | the voice agent built on the Eve channel; transport + front-end decision |
-| `voice-agent.md` | voice agents that speak/listen for other agents (wrapped / injected); the governing architecture: one process by default (the iPhone shape), seams over processes (voice pipe / cascade / wrap), bridge→library refactor (design) |
+| `voice-agent.md` | voice agents that speak/listen for other agents (wrapped / injected); the governing architecture: one process by default (the iPhone shape), seams over processes (voice pipe / cascade / wrap), the voice-agent layer boundary (optimizations, cue caches and greeting policy belong to the agent, not the app shell), bridge→library refactor (design) |
 | `voice-agent-modes.md` | on-device vs passive-remote vs proxy, and where the latency goes |
 | `voice-fast-track.md` | **fast-track** voice agents: the device runs ASR + TTS + tyger-class turn decisions (voice in → text + turn metadata, text out → voice), agents — on- or off-device — implement only interaction heuristics; turn reactions are always local, only content may be remote; remote/hybrid engines remain per-contact choices (design statement) |
 | `tyger-models/` | the HuggingFace repo root for `donpark/tyger-models`: `README.md` (model card — what's in the repo, the `pathc/` TYGER-Step-Student contract/training/eval, delivery manifest), `LICENSE.md` (OpenMDW-1.1 + coverage table) and `NOTICE.md` (provenance; form follows `nineninesix/tyger`) |

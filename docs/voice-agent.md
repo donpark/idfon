@@ -193,6 +193,74 @@ another agent is *not* implemented — wrapping happens above the holder.)
 Transcripts ride out as `IDFON-CALL/1` snapshots and into the durable record
 buffer (P0), exactly as the GPT-Live path does.
 
+## Where the voice-I/O optimizations live (2026-11-07 ruling)
+
+The **voice agent**, not the app shell, owns every behavior that exists only
+because a text agent is being spoken to. The shell owns hardware and UI; the
+agent owns text. Keeping that boundary is what stops future latency work
+(caches, warm-up, barge policy, greetings) from accreting in the app sessions.
+
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| **App shell** | audio session/route, VPIO/AEC, mic tap + playback bus, CallKit, UI, ChatStore, transport client | turn policy, greeting/backchannel/filler, cue caches, echo/self-bleed policy |
+| **Voice agent** | turn-taking (`classic`/`tyger`), endpoint/barge/backchannel decisions, mouth (TTS + speech units), ear (ASR + echo filtering), greeting/filler/silence behaviors, cue caches | how audio is captured/played, UI, persistence |
+| **Agent** | text turns, speech envelopes, tools | voice I/O details |
+
+### Capabilities are provided, policy is chosen
+
+The shell provides **what the device can do**; the voice agent decides **whether
+and when to use it**. The interface is availability + constraints + cost, never
+a policy:
+
+| Capability (shell owns the interface) | Voice agent decides |
+| --- | --- |
+| AEC/VPIO duplex bus | whether barge-in is armed, how a barge is classified, whether the reply-prefix guard applies |
+| On-device AFM (`SystemLanguageModel.isAvailable`) | contextual backchannel, greeting generation, director turns |
+| Model tiers (CoreML/CoreAI/MLX turn model, Phonon/Nemotron packs) | `classic` vs `tyger`, precision rung, cache priming |
+| Playback bus + route (speaker/receiver/headset) | speaker preference, cues/fillers, whether cached audio is allowed |
+| Cache storage (`Library/Caches`) | what is cached, keys, invalidation |
+| CallKit, permissions, thermal and session constraints | nothing — these are hard constraints the shell enforces |
+
+`AEC: available` does not mean "always barge"; `AFM: available` does not mean
+"greet through AFM". The voice agent picks. The shell must **fail visibly**
+when a capability is missing and must never silently substitute a different
+behavior — the Apple-TTS whole-clip fallback was exactly that failure: the
+voice agent believed it still had a streaming, cancellable mouth.
+
+**The profile is the seam.** Resolve the call's settings once — peer/agent,
+engines, language, turn-taker, greeting mode — into a `VoiceAgentProfile`. The
+voice agent reads the profile; it does not reach into contact stores or
+process globals. Every cache key derives from it:
+
+- backchannel/filler: `engine + voice + language + text`
+- greeting: `contact/agent + engine + voice + language + text hash`
+
+Caches (and the pre-render that fills them) are properties of the **mouth**,
+not app singletons. A host that does not own the mouth (a server-cascade
+holder) does not own the cache; whoever speaks owns it.
+
+**One policy layer, two hardware seams.** The iOS and mac sessions are the
+same behavior with different `AudioSource`/`AudioSink`/`AsrEngine`/`TtsEngine`
+implementations. The long-term home is one shared Swift module injected with
+those seams; until then a behavior change must land in both, and
+`voice-agent-loop-contract.md` is the remote/TS equivalent. The per-contact
+negotiated greeting (`#200`) is a profile field, not a shell special case.
+
+**Incremental migration (no rewrite):**
+
+1. `VoiceAgentProfile` (including a `VoiceCapabilities` snapshot: AEC, AFM,
+   model tiers, playback route, cache storage) resolved at session start; the
+   cue caches take it instead of reading globals.
+2. Move `BackchannelCache`/`GreetingCache` under the mouth; add
+   `GreetingPolicy`.
+3. Move the barge/echo policy (reply-prefix guard, `isEcho`, `isCancellable`)
+   behind the ear.
+4. Extract the platform-agnostic loop into the shared module when the
+   iOS/mac diff is small enough.
+
+**Non-goal:** audio session/route/AEC stays in the shell. AEC is hardware and
+platform, not conversation policy.
+
 ## Architecture principle: one process by default (2026-10-21)
 
 A voice agent wraps another agent to voice-enable otherwise text-centric
