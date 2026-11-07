@@ -621,6 +621,20 @@ function resolveStation(stations, key) {
   );
 }
 
+/// The intro carries menu/default/voice; the link only needs the endpoint.
+/// Keep the relay address (reliable, ~40 chars) and drop the LAN/public IP
+/// list — the full list is half the QR and makes the URL wrap down the page.
+/// Id-only discovery is not reliable on iOS (2026-11-06: invite not delivered).
+function linkContact(parsed, station) {
+  const id = parsed.id ?? parsed.endpoint_id;
+  const label = station.name ?? station.instance;
+  if (!id) return { ...parsed, label };
+  const addrs = Array.isArray(parsed.addrs)
+    ? parsed.addrs.filter((address) => address && address.Relay)
+    : [];
+  return { id, ...(addrs.length ? { addrs } : {}), label };
+}
+
 // --- page (the public station index) ----------------------------------------
 
 async function page() {
@@ -647,7 +661,14 @@ async function page() {
     }
     // The same deep link the app's contact card carries (vcf.rs `link_for_json`).
     const contact = (await readFile(ticketFile, "utf8")).trim().split("\n")[0];
-    let payload = contact;
+    // The intro supplies the rest (menu/default/voice), so the link only names
+    // the endpoint. Dropping the address list halves the QR and keeps the URL
+    // from wrapping down the page; iroh discovery resolves the address.
+    const parsed = JSON.parse(contact);
+    const endpoint = parsed.id ?? parsed.endpoint_id;
+    const label = station.name ?? station.instance;
+    const shortContact = linkContact(parsed, station);
+    let payload = JSON.stringify(shortContact);
     if (station.public) {
       // One scan adds the contact AND the receive-only credential any sender
       // may present. Refused unless this station's live config opted in.
@@ -660,7 +681,7 @@ async function page() {
       // `label` is not part of an EndpointAddr but serde ignores it; the app
       // reads it to name the contact ("Add Tech Talk?") instead of "Contact".
       payload = JSON.stringify({
-        contact: { ...JSON.parse(contact), label: station.name ?? station.instance },
+        contact: shortContact,
         // The app stores the `rcan` token string as-is. `ticket --public`
         // prints that token; parsing it as JSON is what broke this page.
         capability,
@@ -732,8 +753,8 @@ function renderIndex(name, cards, base) {
   <div class="body">
     <h2>${escapeHtml(card.topic || card.name)}</h2>
     <p class="station">${escapeHtml(card.name)}</p>
-    <p class="hint">Scan with the Idfon app to add ${escapeHtml(card.topic || card.name)} as a contact${card.public ? " — listen straight away" : ""}.</p>
-    <p class="link"><a href="${escapeHtml(card.link)}">${escapeHtml(card.link)}</a></p>
+    <p class="hint">Scan the code, or tap below, to add ${escapeHtml(card.topic || card.name)}${card.public ? " — listen straight away" : ""}.</p>
+    <p class="link"><a class="open" href="${escapeHtml(card.link)}">Open in Idfon</a></p>
   </div>
 </li>`
     )
@@ -758,8 +779,9 @@ function renderIndex(name, cards, base) {
   .qr svg { width: 184px; height: 184px; display: block; }
   h2 { font-size: 1rem; margin: 0 0 .15rem; }
   .station, .hint { margin: 0 0 .5rem; font-size: .85rem; opacity: .7; }
-  .link { margin: 0; font-size: .7rem; overflow-wrap: anywhere; opacity: .5; }
-  .link a { color: inherit; }
+  .link { margin: 0; }
+  .link a.open { display: inline-block; padding: .4rem .8rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+                 border-radius: 9px; font-size: .85rem; color: inherit; text-decoration: none; }
   footer { margin-top: 2.5rem; font-size: .8rem; opacity: .55; }
 </style>
 </head>
@@ -769,7 +791,7 @@ function renderIndex(name, cards, base) {
 <ul>
 ${items}
 </ul>
-<footer>Served from <code>${escapeHtml(base)}/${escapeHtml(name)}/</code>. Add the contact, then call it to listen.</footer>
+<footer>Served from <code>${escapeHtml(base)}/${escapeHtml(name)}/</code>. Add a station, then open it to listen.</footer>
 </body>
 </html>
 `;

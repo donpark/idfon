@@ -459,6 +459,14 @@ its JSON face: the app stores the token verbatim (`CapabilityTicketToken`),
 and an embedded JSON document is not a credential. The page command checks
 this before writing.
 
+The card in the link is **short**: endpoint id, the relay address, and a
+label — the LAN/public IP list is dropped (the relay reaches the holder;
+id-only discovery was not reliable on iOS), and the menu/default/voice come
+from the intro fetch. The page renders an **Open in Idfon** button instead of
+the raw URL, so a long ticket cannot take over the page. Moving the public
+ticket itself into the manifest would shrink the link to the endpoint id; it
+stays in the link for now because that is the admission credential.
+
 The apps decode the envelope, add the contact, and store the capability ticket
 under that peer — so one scan both adds the topic and makes it callable. A
 legacy contact-only link still works (the payload is then the card).
