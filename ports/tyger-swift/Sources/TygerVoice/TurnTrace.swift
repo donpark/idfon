@@ -69,7 +69,7 @@ public final class TurnTrace {
             NSLog("turn-trace: cannot open \(url.path)")
             return nil
         }
-        try? handle.seekToEnd()
+        _ = try? handle.seekToEnd()
         self.handle = handle
         let info = Bundle.main.infoDictionary
         var header: [String: Any] = [
