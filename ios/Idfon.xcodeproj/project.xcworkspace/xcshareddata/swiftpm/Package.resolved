@@ -1,42 +1,41 @@
 {
-  "originHash": "cff967394dc55e43538fe94c8a8845a19ebae91d0dc8e968d33b8bc435b013f9",
-  "pins": [
+  "originHash" : "9e27a4b43555f4f94c6386eceb7411cf99cbc9f0b26220d773b5753def782f2c",
+  "pins" : [
     {
-      "identity": "fluidaudio",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/donpark/FluidAudio",
-      "state": {
-        "branch": "encoder-output-callback",
-        "revision": "2ad9b4225769a9f644cee1995809918fb0fe2d27"
+      "identity" : "fluidaudio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/donpark/FluidAudio",
+      "state" : {
+        "revision" : "2ad9b4225769a9f644cee1995809918fb0fe2d27"
       }
     },
     {
-      "identity": "mlx-swift",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/ml-explore/mlx-swift.git",
-      "state": {
-        "revision": "19601207e9a0de51e03ee6ec0c3c5f3784275075",
-        "version": "0.32.3"
+      "identity" : "mlx-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ml-explore/mlx-swift.git",
+      "state" : {
+        "revision" : "19601207e9a0de51e03ee6ec0c3c5f3784275075",
+        "version" : "0.32.3"
       }
     },
     {
-      "identity": "swift-numerics",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/apple/swift-numerics",
-      "state": {
-        "revision": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
-        "version": "1.1.1"
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
       }
     },
     {
-      "identity": "xn-ptts",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/gradium-ai/xn-ptts.git",
-      "state": {
-        "branch": "94f6c08e4a0e198bc9f3eb988535ab207607e334",
-        "revision": "f07d7952db0c6127d5e4bc3f41c82b3304b6b5aa"
+      "identity" : "xn-ptts",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/gradium-ai/xn-ptts.git",
+      "state" : {
+        "branch" : "94f6c08e4a0e198bc9f3eb988535ab207607e334",
+        "revision" : "f07d7952db0c6127d5e4bc3f41c82b3304b6b5aa"
       }
     }
   ],
-  "version": 3
+  "version" : 3
 }

@@ -448,8 +448,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/donpark/FluidAudio";
 			requirement = {
-				kind = branch;
-				branch = encoder-output-callback;
+				kind = revision;
+				revision = 2ad9b4225769a9f644cee1995809918fb0fe2d27;
 			};
 		};
 		54D511937386577BC39C56B1 /* XCRemoteSwiftPackageReference "xn-ptts" */ = {
