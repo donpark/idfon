@@ -157,12 +157,25 @@ enrichment drops to 1.6× and 2.4× — muting the agent channel makes the model
 spray events rather than aim them. Silencing is not the fix for the mode
 confound; a LISTEN-mode gate on the normal run is.
 
-The cause is the mode track, not the labels.
-In a two-human clip, ch1 (the model's "agent" channel) is a person who talks, so
-the model sits in SPEAK mode for ~40% of the decision lead. ENDPOINT only fires
-in LISTEN mode, so those clips cannot produce it by construction. Restricting to
-clips whose lead is LISTEN-only lifts silent_tail to 56% and handoff to 21%,
-still with zero overlap fires.
+**The mode explanation was wrong, and the measurement says why.** The first read
+was "ch1 is a second human who talks, so the model sits in SPEAK ~40% of the
+lead". Measuring the lead directly contradicts it: in 20 handoff clips the
+next speaker's channel sits 26–100 dB *below* the ender's, and of the 9 clips
+reported as SPEAK-in-lead, **9 of 9** have that channel below −50 dB for the
+whole lead — 7 of them with every frame below it. So no partner is talking.
+
+The cause is the mode track's 1.92 s release latch (`RELEASE_HOPS = 6`): one
+transient up to ~0.7 s *before* the clip's 1.2 s lead latches SPEAK across the
+whole lead. "SPEAK in the lead" is therefore stale state, not partner speech.
+Two consequences: the 40% figure says nothing about who was talking, and the
+"LISTEN-only lead" subset above selects on latch luck rather than on partner
+silence — so its 21%/56% should not be read as a clean LISTEN measurement.
+
+Why ENDPOINT stays low is therefore still open. The candidates are the latch
+above (an ENDPOINT gate that needs LISTEN, defeated by stale SPEAK), the
+ENDPOINT debounce, or a genuine difference in what the model calls a turn end.
+Distinguishing them needs a mode-track replay with the latch removed, not more
+sampling.
 
 The consequence for the dataset: the labels are valid, but scoring the product's
 ears on a two-human corpus tests the wrong mode. Either gate the score on
