@@ -71,6 +71,9 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tol", type=float, default=TOL_S)
     ap.add_argument("--device", default="mps")
+    ap.add_argument("--release-hops", type=int, default=None,
+                    help="override mode_track's release latch (default 6 = 1.92 s). "
+                         "0-1 removes the stale SPEAK carried into a clip's lead.")
     ap.add_argument("--silent-agent", action="store_true",
                     help="zero ch1 so the model sees no partner speech: the user-only "
                          "endpoint protocol. ch1 is a second human in this corpus, and "
@@ -93,6 +96,11 @@ def main() -> None:
     sys.path.insert(0, "ports/tyger-student")
     from oracle import Oracle
     from featurize import run_session
+    import featurize as _fz
+    if args.release_hops is not None:
+        _base = _fz.frame_modes
+        _fz.frame_modes = lambda *a, **kw: _base(*a, release_hops=args.release_hops,
+                                                 **{k: v for k, v in kw.items() if k != "release_hops"})
 
     oracle = Oracle(device=args.device).load_bundle()
 

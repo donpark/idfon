@@ -174,8 +174,28 @@ silence — so its 21%/56% should not be read as a clean LISTEN measurement.
 Why ENDPOINT stays low is therefore still open. The candidates are the latch
 above (an ENDPOINT gate that needs LISTEN, defeated by stale SPEAK), the
 ENDPOINT debounce, or a genuine difference in what the model calls a turn end.
-Distinguishing them needs a mode-track replay with the latch removed, not more
-sampling.
+
+**Replay with the latch removed** (`--release-hops 1`, same 120 rows):
+
+| kind | ENDPOINT ±0.32 s, latch | no latch | events/clip | SPEAK lead |
+| --- | ---: | ---: | ---: | ---: |
+| handoff | 3/28 (11%) | 4/28 (14%) | 0.5 → 0.8 | 39% → 7% |
+| silent_tail | 4/16 (25%) | 6/16 (38%) | 0.6 → 1.1 | 42% → 10% |
+| overlap | 0/76 (0%) | 0/76 (0%) | 0.2 → 0.5 | 43% → 13% |
+
+The latch costs recall and buys no ENDPOINT precision — false ENDPOINTs on
+overlaps stay at zero without it. So softening the latch is a net win for this
+event (the BARGE/BACKCHANNEL precision it protects is a separate question). But
+recall only reaches 14%/38%, so the latch was not the main limiter.
+
+**The remaining explanation is a category mismatch.** At handoff marks the model
+most often emits BACKCHANNEL, not ENDPOINT (10 of 13 landings with the latch
+removed). The label asks "did the turn end"; the model answers "someone said a
+short thing". That is the same conclusion the live-capture scoring reached by a
+different route — the model's event vocabulary does not line up with
+transcript-derived turn ends — and it means a smart-turn dataset should label
+turn ends and let each model's event mapping be measured, rather than assume
+ENDPOINT is the turn-end event.
 
 The consequence for the dataset: the labels are valid, but scoring the product's
 ears on a two-human corpus tests the wrong mode. Either gate the score on
