@@ -97,8 +97,14 @@ def voiced(ws: list[dict], starts: list[float], lo: float, hi: float) -> float:
     return span / (hi - lo)
 
 
-def classify(a_turns: list[dict], b_turns: list[dict]) -> list[dict]:
-    """One event per A-turn boundary; B is the speaker who takes (or keeps) the floor."""
+def classify(a_turns: list[dict], b_turns: list[dict], direction: str = "a2b") -> list[dict]:
+    """One event per A-turn boundary; B is the speaker who takes (or keeps) the floor.
+
+    `direction` names which speaker sat on channel 0 in the source audio. The
+    extractor normalises channels so ch0 is always the turn *ender* and ch1 the
+    party taking the floor — the model's user/agent roles — and records this so a
+    consumer can invert it.
+    """
     out = []
     if not b_turns:
         return out
@@ -117,7 +123,8 @@ def classify(a_turns: list[dict], b_turns: list[dict]) -> list[dict]:
                 kind = "silent_tail"
             else:
                 kind = "long_pause"
-            out.append({"kind": kind, "turn_start": round(a["start"], 3),
+            out.append({"kind": kind, "dir": direction,
+                        "turn_start": round(a["start"], 3),
                         "turn_end": round(a["end"], 3), "mark": round(b["start"], 3),
                         "gap_ms": round(gap, 1), "next_ms": round(dur, 1)})
             break  # the first next turn is the one that takes the floor
@@ -140,15 +147,20 @@ def ranges(data: str, events: set[str], limit: int | None) -> list[dict]:
         a_ws, b_ws = load_words(a_p), load_words(b_p)
         a_st, b_st = [w["start"] for w in a_ws], [w["start"] for w in b_ws]
         a_t, b_t = turns(a_ws), turns(b_ws)
-        # both directions: each speaker's turn end is a decision opportunity
-        for a, b in ((a_t, b_t), (b_t, a_t)):
-            for e in classify(a, b):
+        # both directions: each speaker's turn end is a decision opportunity.
+        # The word list must travel with its turns — measuring a_ws for the b2a
+        # direction reads the wrong speaker and rejects every b2a row.
+        for a, b, aw, bw, d in ((a_t, b_t, a_ws, b_ws, "a2b"),
+                                (b_t, a_t, b_ws, a_ws, "b2a")):
+            a_st2 = [w["start"] for w in aw]
+            b_st2 = [w["start"] for w in bw]
+            for e in classify(a, b, d):
                 if e["kind"] not in events:
                     continue
                 lead_lo = max(0.0, e["mark"] - LEAD_S)
                 # voiced fraction of the turn-ending speaker and of the next speaker
-                ender = voiced(a_ws, a_st, lead_lo, e["mark"])
-                nxt = voiced(b_ws, b_st, lead_lo, e["mark"])
+                ender = voiced(aw, a_st2, lead_lo, e["mark"])
+                nxt = voiced(bw, b_st2, lead_lo, e["mark"])
                 e["lead_ender"] = round(ender, 3)
                 e["lead_next"] = round(nxt, 3)
                 e["lead_clean"] = bool(ender >= 0.5 and nxt <= 0.1)
@@ -179,6 +191,10 @@ def _clip(r: dict, data: str, bdir: str, clip_s: float) -> bool:
     b_f = os.path.join(conv, "speaker_b.flac")
     if not (os.path.exists(a_f) and os.path.exists(b_f)):
         return False
+    # ch0 = the turn ender (the model's "user"), ch1 = who takes the floor.
+    # A row seen from B's turn end puts speaker_b on ch0, so the files swap.
+    if r.get("dir") == "b2a":
+        a_f, b_f = b_f, a_f
     t0 = max(0.0, r["mark"] - LEAD_S)
     name = f"{r['conversation_id']}_{r['kind']}_{r['mark']:.2f}.wav"
     subprocess.run(
