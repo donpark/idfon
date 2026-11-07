@@ -28,9 +28,12 @@ Duration median 30.1 min (p10 4.4, p90 75.6, max 252). Relationships: friends
 1,136, colleagues 173, romantic 157, family 136.
 
 The full corpus is under a Data Use Agreement (not redistributable). The public
-16-conversation sample is CC-BY-4.0. Whether derived *label files* count as "the
-dataset" for redistribution is unresolved; until it is answered the labels ship
-internally.
+16-conversation sample is CC-BY-4.0. **Resolution: we redistribute the
+annotated ranges, never the audio.** A label row names the conversation and the
+clip window, so a reader who already has dataset access re-cuts the audio
+locally. The published v0 bundle (`bench-results/openyap-v0-2026-11-07/`) is
+ranges only, 1.1 MB; the clip set for internal audition lives beside it and is
+not published.
 
 ## Event definitions
 
@@ -234,8 +237,8 @@ TYGER_BUNDLE=... $V scripts/openyap-score.py \
 
 ## Open questions
 
-- **Redistribution.** Do derived label files count as "the dataset"? Decides
-  publishable vs internal.
+- **Redistribution.** Settled: annotated ranges publish, audio does not. The
+  published bundle is ranges only; clips stay internal.
 - **The negative class.** A detector trained on positives only learns where the
   labels are. Negatives should be labelled at the same decision opportunities —
   `overlap` is the natural hard negative for "the turn ended".
