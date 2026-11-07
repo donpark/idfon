@@ -119,23 +119,31 @@ product's behaviour. Channels follow the clip convention.
 The decision frame is the ender's last word end, 8 s into the window. An event
 lands when it fires within a tolerance of that frame.
 
-**90-clip sample** (`--kinds handoff,silent_tail,overlap`, seed 0):
+**120-clip sample** (`--kinds handoff,silent_tail,overlap`, seed 0). ENDPOINT is
+the event that means "the user's turn ended":
 
-| kind | n | ENDPOINT lands ±0.32 s | any event lands |
-| --- | ---: | ---: | ---: |
-| handoff | 19 | 2 (11%) | 5 (26%) |
-| silent_tail | 13 | 3 (23%) | 6 (46%) |
-| overlap | 58 | 1 (2%) | 3 (5%) |
+| kind | n | ENDPOINT ±0.32 s | ENDPOINT ±0.64 s | LISTEN-only lead |
+| --- | ---: | ---: | ---: | ---: |
+| handoff | 28 | 3 (11%) | 4 (14%) | 3/14 (21%) |
+| silent_tail | 16 | 4 (25%) | 6 (38%) | 5/9 (56%) |
+| overlap | 76 | 0 (0%) | 0 (0%) | 0/33 (0%) |
 
-At ±0.64 s: handoff 16%, silent_tail 23%, overlap 2%.
+Reading: the direction is right and clean — ENDPOINT never fires on an
+interruption — but recall is low. The cause is the mode track, not the labels.
+In a two-human clip, ch1 (the model's "agent" channel) is a person who talks, so
+the model sits in SPEAK mode for ~40% of the decision lead. ENDPOINT only fires
+in LISTEN mode, so those clips cannot produce it by construction. Restricting to
+clips whose lead is LISTEN-only lifts silent_tail to 56% and handoff to 21%,
+still with zero overlap fires.
 
-Reading: the direction is right — ENDPOINT lands on real turn ends more than on
-interruptions — but the rate is low. The confound is structural: Open Yap's ch1
-is a second *human*, not agent playback. The product's BARGE means the user
-talked over the agent; here the "agent" channel is a person who genuinely takes
-the floor and gets talked over, so BARGE floods (154 fires across 19 handoff
-clips) while ENDPOINT stays rare. The model's agent-channel semantics do not
-transfer to a two-human corpus unchanged.
+The consequence for the dataset: the labels are valid, but scoring the product's
+ears on a two-human corpus tests the wrong mode. Either gate the score on
+LISTEN-mode frames, or map "agent" to the party who is silent at the decision —
+and document that ch1 is a second human, so BARGE here means "the other person
+talked over", the inverse of the product's meaning.
+
+BARGE fires about 7 times per clip in every kind (7.8 handoff, 7.2 silent_tail,
+7.1 overlap), which is the same confound seen from the other side.
 
 Cost: ~10 s per clip single-process on MPS. Scoring all 23,287 gated handoffs is
 ~65 h; a batched path is needed before a full-corpus score.

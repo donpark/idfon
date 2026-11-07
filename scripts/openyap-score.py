@@ -95,17 +95,26 @@ def main() -> None:
     out = []
     for i, r in enumerate(rows, 1):
         mark = r["mark"]
-        ender_end = mark - r["gap_ms"] / 1000.0
-        t0 = max(0.0, ender_end - LEAD_S)
+        gap = r["gap_ms"] / 1000.0
+        # handoff/silent_tail: the decision is the ender's last word end, which
+        # is `gap` before the mark. overlap: gap is negative (the next speaker
+        # started first), so the decision is the interruption at the mark; using
+        # mark - gap there lands after the mark and can run past the audio.
+        decision = mark - gap if gap >= 0 else mark
+        t0 = max(0.0, decision - LEAD_S)
         dur = LEAD_S + (mark - t0) + TAIL_S
         wavs = decode(r["conversation_id"], r.get("dir", "a2b"), t0, dur, args.data)
-        _frames, events = run_session(oracle, wavs)
-        dec = ender_end - t0
+        frames, events = run_session(oracle, wavs)
+        dec = decision - t0
+        mode = frames["mode"]
+        fdec = int(dec / FRAME_S)
+        lead_speak = mode[max(0, fdec - 15):fdec]
         ev = [(round(f * FRAME_S, 2), k) for f, k in events if k != "FRAME"]
         landing = [(t, k) for t, k in ev if abs(t - dec) <= args.tol]
         row = dict(r)
         row.update(decision_s=round(dec, 2), events=ev,
-                   n_events=len(ev), landing=landing)
+                   n_events=len(ev), landing=landing,
+                   speak_frac_lead=round(float((lead_speak == 1).mean()) if len(lead_speak) else 0.0, 2))
         out.append(row)
         if i % 25 == 0 or i == len(rows):
             print(f"  {i}/{len(rows)} scored", flush=True)
@@ -118,7 +127,9 @@ def main() -> None:
         landed = [r for r in rs if r["landing"]]
         kinds_fired = Counter(k for r in rs for _t, k in r["landing"])
         any_fired = Counter(k for r in rs for _t, k in r["events"])
+        speak = [r.get("speak_frac_lead", 0.0) for r in rs]
         print(f"  {kind:12s} n={len(rs):4d}  lands={len(landed):4d} ({len(landed)/len(rs):.0%})"
+              f"  speak-mode lead={sum(speak)/max(1,len(speak)):.0%}"
               f"  landing kinds={dict(kinds_fired)}  all fired={dict(any_fired)}")
     if args.out:
         with open(args.out, "w") as f:
