@@ -39,6 +39,7 @@ import os
 import subprocess
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TURN_GAP_MS = 300.0
 HANDOFF_MAX_MS = 320.0
@@ -162,29 +163,52 @@ def ranges(data: str, events: set[str], limit: int | None) -> list[dict]:
     return rows
 
 
-def extract(jsonl: str, out: str, data: str, clip_s: float = CLIP_S) -> int:
-    """Decode only the requested ranges into stereo 16 kHz clips."""
-    os.makedirs(out, exist_ok=True)
+def _clip(r: dict, data: str, bdir: str, clip_s: float) -> bool:
+    """Decode one range to a stereo 16 kHz clip; False when its audio is absent."""
+    conv = os.path.join(data, "conversations", r["conversation_id"])
+    a_f = os.path.join(conv, "speaker_a.flac")
+    b_f = os.path.join(conv, "speaker_b.flac")
+    if not (os.path.exists(a_f) and os.path.exists(b_f)):
+        return False
+    t0 = max(0.0, r["mark"] - LEAD_S)
+    name = f"{r['conversation_id']}_{r['kind']}_{r['mark']:.2f}.wav"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{clip_s:.3f}", "-i", a_f,
+         "-ss", f"{t0:.3f}", "-t", f"{clip_s:.3f}", "-i", b_f,
+         "-filter_complex",
+         "[0:a]aresample=16000,aformat=channel_layouts=mono[a];"
+         "[1:a]aresample=16000,aformat=channel_layouts=mono[b];"
+         "[a][b]amerge=inputs=2[out]",
+         "-map", "[out]", "-ac", "2", "-c:a", "pcm_s16le",
+         os.path.join(bdir, name), "-y"], check=True)
+    return True
+
+
+def extract(jsonl: str, out: str, data: str, clip_s: float = CLIP_S,
+            workers: int = 8, batch: int = 1000, clean: bool = False) -> int:
+    """Decode only the requested ranges into stereo 16 kHz clips.
+
+    Ranges are split into `batch`-sized directories and decoded by `workers`
+    ffmpeg processes at once, so the 297 GB corpus is read only where asked.
+    """
     rows = [json.loads(l) for l in open(jsonl) if l.strip()]
-    for r in rows:
-        conv = os.path.join(data, "conversations", r["conversation_id"])
-        a_f = os.path.join(conv, "speaker_a.flac")
-        b_f = os.path.join(conv, "speaker_b.flac")
-        if not (os.path.exists(a_f) and os.path.exists(b_f)):
-            print(f"! missing flac for {r['conversation_id']}", file=sys.stderr)
-            continue
-        t0 = max(0.0, r["mark"] - LEAD_S)
-        name = f"{r['conversation_id']}_{r['kind']}_{r['mark']:.2f}.wav"
-        subprocess.run(
-            ["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{clip_s:.3f}", "-i", a_f,
-             "-ss", f"{t0:.3f}", "-t", f"{clip_s:.3f}", "-i", b_f,
-             "-filter_complex",
-             "[0:a]aresample=16000,aformat=channel_layouts=mono[a];"
-             "[1:a]aresample=16000,aformat=channel_layouts=mono[b];"
-             "[a][b]amerge=inputs=2[out]",
-             "-map", "[out]", "-ac", "2", "-c:a", "pcm_s16le",
-             os.path.join(out, name), "-y"], check=True)
-    return len(rows)
+    if clean:
+        rows = [r for r in rows if r.get("lead_clean")]
+    os.makedirs(out, exist_ok=True)
+    batches = [rows[i:i + batch] for i in range(0, len(rows), batch)]
+
+    def one(bi: int, bros: list[dict]) -> int:
+        bdir = os.path.join(out, f"batch_{bi:03d}")
+        os.makedirs(bdir, exist_ok=True)
+        return sum(_clip(r, data, bdir, clip_s) for r in bros)
+
+    total = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(one, i, b) for i, b in enumerate(batches)]
+        for i, f in enumerate(as_completed(futs), 1):
+            total += f.result()
+            print(f"  batch {i}/{len(batches)}, {total} clips", flush=True)
+    return total
 
 
 def selfcheck() -> None:
@@ -241,6 +265,9 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="first N conversations")
     ap.add_argument("--extract", default=None, help="materialise clips from a ranges JSONL")
     ap.add_argument("--clip-s", type=float, default=CLIP_S)
+    ap.add_argument("--workers", type=int, default=8, help="parallel ffmpeg processes")
+    ap.add_argument("--batch", type=int, default=1000, help="ranges per output directory")
+    ap.add_argument("--clean", action="store_true", help="extract only lead_clean ranges")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
 
@@ -249,7 +276,7 @@ def main() -> None:
     if a.extract:
         if not a.out:
             ap.error("--extract needs --out")
-        n = extract(a.extract, a.out, a.data, a.clip_s)
+        n = extract(a.extract, a.out, a.data, a.clip_s, a.workers, a.batch, a.clean)
         print(f"extracted {n} clips to {a.out}")
         return
     if not a.out:
