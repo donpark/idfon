@@ -22,7 +22,7 @@ use serde_json::Value;
 use crate::cartesia::CartesiaTtsEngine;
 use crate::deepgram::DeepgramEngine;
 use crate::elevenlabs::ElevenLabsTtsEngine;
-use crate::gateway::{OpenAiCompatEngine, Profile};
+use crate::gateway::{OpenAiCompatEngine};
 use crate::process::ProcessVoiceEngine;
 use crate::{AudioFormat, AudioSink, Endpointer, SttSession, TtsSession, VoiceEngine};
 
