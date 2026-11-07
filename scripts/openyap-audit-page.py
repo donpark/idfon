@@ -55,8 +55,39 @@ def main() -> None:
     # An endpoint bundle carries `class_` (on/off the corpus eot label); a barge
     # bundle does not. The rubric question changes with the event, so pick by column.
     endpoint = bool(rows) and "class_" in rows[0]
-    title = ("Endpoint audit — " if endpoint else "Barge audit — ") + os.path.basename(os.path.abspath(d))
-    if endpoint:
+    # A turn-range bundle carries `kind`; a barge bundle does not.
+    turn = bool(rows) and "kind" in rows[0] and not endpoint
+    title = (("Endpoint audit — " if endpoint else
+              "Turn ranges — " if turn else "Barge audit — ")
+             + os.path.basename(os.path.abspath(d)))
+    if turn:
+        rubric_html = """
+  <section class="rubric">
+    <div class="col yes">
+      <h2>Say <b>Yes</b> — the audio matches the labelled event</h2>
+      <ul>
+        <li><b>handoff</b>: the turn ender stops and the other party starts within ~0.3 s</li>
+        <li><b>silent_tail</b>: the ender stops and the other party stays silent 0.3-1.2 s</li>
+        <li><b>overlap</b>: the other party starts <i>before</i> the ender stops</li>
+        <li><b>backchannel</b>: a short (&lt;0.3 s) acknowledgement inside the other's turn</li>
+      </ul>
+    </div>
+    <div class="col no">
+      <h2>Say <b>No</b> — the label is wrong for this audio</h2>
+      <ul>
+        <li>the ender is still talking at the mark (the turn did not end)</li>
+        <li>the other party was already talking before the mark (not a handoff)</li>
+        <li>the "next speaker" is laughter, a cough, or noise, not a floor claim</li>
+        <li>the kind is wrong: this is a tail where the label says handoff, or vice versa</li>
+      </ul>
+    </div>
+    <div class="tie">
+      <b>Tiebreak:</b> judge the event's own definition, not whether answering would be good.
+      Left channel = the turn ender, right = the party taking the floor. The mark sits at 1.2 s.
+      Levels are shown after you vote.
+    </div>
+  </section>"""
+    elif endpoint:
         rubric_html = """
   <section class="rubric">
     <div class="col yes">

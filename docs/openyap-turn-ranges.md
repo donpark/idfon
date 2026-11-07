@@ -92,6 +92,15 @@ Both together keep 35% of all candidate ranges.
 Gated by kind: overlap 110,846 · silent_tail 26,892 · handoff 23,287 ·
 backchannel 407. 1,602 conversations.
 
+## The v0 release sample
+
+`bench-results/openyap-v0-2026-11-07/` — 994 clips, 142 per stratum, drawn by
+`scripts/openyap-v0.py`. Equal counts per stratum so the 69% overlap population
+does not drown the rest: handoff_short, handoff_long, tail_short, tail_long,
+overlap_short, overlap_long, backchannel. Ships as `ranges.jsonl` (the label
+record, keyed to source ranges), `manifest.csv`, 994 clips (366 MB) and a
+listening page with a turn-range rubric. No human has auditioned it yet.
+
 ## Files and disk
 
 Built under `bench-results/openyap-ranges-2026-11-07/` (gitignored):
