@@ -71,6 +71,10 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tol", type=float, default=TOL_S)
     ap.add_argument("--device", default="mps")
+    ap.add_argument("--silent-agent", action="store_true",
+                    help="zero ch1 so the model sees no partner speech: the user-only "
+                         "endpoint protocol. ch1 is a second human in this corpus, and "
+                         "its speech keeps the model in SPEAK mode where ENDPOINT cannot fire.")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -104,6 +108,16 @@ def main() -> None:
         t0 = max(0.0, decision - LEAD_S)
         dur = LEAD_S + (mark - t0) + TAIL_S
         wavs = decode(r["conversation_id"], r.get("dir", "a2b"), t0, dur, args.data)
+        if args.silent_agent:
+            wavs["ch1"] = np.zeros_like(wavs["ch1"])
+        # cross-talk: a close-talk channel still picks up the other speaker. If the
+        # two channels correlate in the lead, "the ender is silent" is not clean.
+        lead_n = min(int(LEAD_S * 16000), len(wavs["ch0"]))
+        c0, c1 = wavs["ch0"][:lead_n], wavs["ch1"][:lead_n]
+        if c0.std() > 1e-6 and c1.std() > 1e-6:
+            xtalk = round(float(np.corrcoef(c0, c1)[0, 1]), 3)
+        else:
+            xtalk = 0.0
         frames, events = run_session(oracle, wavs)
         dec = decision - t0
         mode = frames["mode"]
@@ -114,7 +128,8 @@ def main() -> None:
         row = dict(r)
         row.update(decision_s=round(dec, 2), events=ev,
                    n_events=len(ev), landing=landing,
-                   speak_frac_lead=round(float((lead_speak == 1).mean()) if len(lead_speak) else 0.0, 2))
+                   speak_frac_lead=round(float((lead_speak == 1).mean()) if len(lead_speak) else 0.0, 2),
+                   xtalk=xtalk)
         out.append(row)
         if i % 25 == 0 or i == len(rows):
             print(f"  {i}/{len(rows)} scored", flush=True)
@@ -128,8 +143,10 @@ def main() -> None:
         kinds_fired = Counter(k for r in rs for _t, k in r["landing"])
         any_fired = Counter(k for r in rs for _t, k in r["events"])
         speak = [r.get("speak_frac_lead", 0.0) for r in rs]
+        xt = [r.get("xtalk", 0.0) for r in rs]
         print(f"  {kind:12s} n={len(rs):4d}  lands={len(landed):4d} ({len(landed)/len(rs):.0%})"
               f"  speak-mode lead={sum(speak)/max(1,len(speak)):.0%}"
+              f"  crosstalk|r|={sum(abs(x) for x in xt)/max(1,len(xt)):.2f}"
               f"  landing kinds={dict(kinds_fired)}  all fired={dict(any_fired)}")
     if args.out:
         with open(args.out, "w") as f:
