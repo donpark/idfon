@@ -154,8 +154,8 @@ The silent-agent run (`--silent-agent`, LISTEN init, agent channel muted) does
 **not** improve this: events/clip rises to 1.2–1.3, the hit rate stays at 11%
 (handoff) and falls to 19% (silent_tail), and the chance level rises to 7–8%. So
 enrichment drops to 1.6× and 2.4× — muting the agent channel makes the model
-spray events rather than aim them. Silencing is not the fix for the mode
-confound; a LISTEN-mode gate on the normal run is.
+spray events rather than aim them. Silencing is not the fix; the next
+paragraph shows the "mode confound" itself was misdiagnosed.
 
 **The mode explanation was wrong, and the measurement says why.** The first read
 was "ch1 is a second human who talks, so the model sits in SPEAK ~40% of the
