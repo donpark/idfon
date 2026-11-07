@@ -52,7 +52,13 @@ enum IdfonPaths {
 /// Starts the daemon on a background thread. The daemon runs until process
 /// exit (there is no stop path; see iroh-c-ffi/src/daemon.rs).
 enum IdfonRuntime {
+    /// `AppDelegate` starts it once. A second call must not spawn a second
+    /// daemon thread: the data lock would reject it only after the bind.
+    private static var started = false
+
     static func start() {
+        guard !started else { return }
+        started = true
         let socket = IdfonPaths.socketPath
         let dataDir = IdfonPaths.dataDir.path
         // Rust media paths fall back to literal /tmp (absent in the iOS

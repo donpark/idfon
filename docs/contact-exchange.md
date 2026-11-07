@@ -41,7 +41,7 @@ app "Share Contact Card"                                      ▼
 | `idfon://add/<base64url>` verb | `IdfonURL` (both apps); iOS `SceneDelegate`, mac `AppDelegate` |
 | My Card (QR + Share + Save to Contacts) | iOS Contacts tab → Add menu → "My Card"; mac sidebar → "My Card…" (exports the active identity's card) |
 | Share an identity's card (any line) | iOS Identities list → tap a row (swipe "Ticket" copies the raw ticket token); mac sidebar → identity submenu → "Share Contact Card…" |
-| QR scan | iOS Add menu → "Scan QR Code" (mac has no scanner; show the code and let the phone scan) |
+| QR scan | iOS Add menu → "Scan QR Code" (mac has no scanner; show the code and let the phone scan); the scanner decodes the whole envelope, so `capability`/`auth` ride along like a tapped link |
 | `.vcf` document open ("Open in Idfon") | `CFBundleDocumentTypes` (`public.vcard`) in both Info.plists |
 | Save to system Contacts (name + idfon URL) | `CNContactStore` (`NSContactsUsageDescription` in both Info.plists) |
 | Share a peer's card | iOS contact detail → "…" menu; mac contact context menu |
@@ -52,8 +52,17 @@ decoding is base64url of the deep-link payload.
 ## Approval modal (the add flow)
 
 Tapping an `idfon://add/` link opens the approval modal: the name is editable
-(rename before adding) and the user either adds or **denies**. A protected
-contact's envelope carries an `auth` block instead of a capability ticket:
+(rename before adding) and the user either adds or **denies**. A public or
+self-service contact carries the holder's ticket in the same envelope, as the
+**`rcan` token string** (a JSON ticket document is not a credential):
+
+```json
+{ "contact": …, "capability": "<base32 rcan token>" }
+```
+
+The app stores that token under the contact's peer id, so one add both makes
+the contact callable and carries its voice route. A protected contact's
+envelope carries an `auth` block instead of a capability ticket:
 
 ```json
 { "contact": …, "auth": { "kind": "code", "label": "Admission code",

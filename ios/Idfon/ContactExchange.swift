@@ -288,7 +288,7 @@ enum ContactExchange {
         if let url = URL(string: payload), case .add(let link)? = IdfonURL(url) {
             payload = link
         }
-        guard let ticketJSON = ticketJSON(fromLink: payload) else {
+        guard let link = decodeLink(payload) else {
             let alert = UIAlertController(
                 title: "Not a Contact Code", message: "Scan an idfon contact QR code.",
                 preferredStyle: .alert)
@@ -296,7 +296,11 @@ enum ContactExchange {
             topPresenter(from: viewController).present(alert, animated: true)
             return
         }
-        confirmAdd(ticketJSON: ticketJSON, from: viewController, client: client, onAdded: onAdded)
+        // Keep the envelope: a station's QR carries the capability ticket (and
+        // protected contacts their admission flow), exactly like a tapped link.
+        confirmAdd(
+            ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON, auth: link.auth,
+            from: viewController, client: client, onAdded: onAdded)
     }
 
     /// The topmost presented controller (alerts must present from whatever is

@@ -99,6 +99,22 @@ impl Menu {
         Ok(Self { items: root })
     }
 
+    /// Playable entries in display order, depth-first — the order the app's
+    /// menu lists them, so a rotation over the catalogue follows the menu.
+    pub fn playable(&self) -> Vec<&Item> {
+        fn walk<'a>(items: &'a [Item], out: &mut Vec<&'a Item>) {
+            for item in items {
+                if item.remote.is_some() || item.local.is_some() {
+                    out.push(item);
+                }
+                walk(&item.items, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.items, &mut out);
+        out
+    }
+
     /// Walk a menu path — `News/Morning Briefing`, or 1-based indices `1/2`,
     /// segments case-insensitive and mixable — and return the entry it names.
     pub fn resolve(&self, path: &str) -> Result<&Item> {
@@ -231,6 +247,14 @@ mod tests {
         assert_eq!(tech.title, "Tech");
         assert_eq!(tech.remote.as_deref(), Some("https://example.com/tech.m3u8"));
         assert_eq!(tech.local, None);
+    }
+
+    #[test]
+    fn lists_playable_entries_in_menu_order() {
+        let menu = menu();
+        let titles: Vec<&str> = menu.playable().iter().map(|item| item.title.as_str()).collect();
+        // The section itself has no source; leaves keep display order.
+        assert_eq!(titles, ["Morning Briefing", "Evening Report", "Tech"]);
     }
 
     #[test]

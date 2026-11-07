@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Curate a menu contact's OPML from real online talk-radio stations.
+// Curate or search a menu contact's OPML from real online talk-radio stations.
 //
 //   node scripts/radio-stations-opml.mjs --out shows.opml
 //   node scripts/radio-stations-opml.mjs --tag "talk,news" --limit 8 --group country
+//   node scripts/radio-stations-opml.mjs --query "bbc radio" --json
+//   node scripts/radio-stations-opml.mjs --country Germany --tag news --append shows.opml
+//   node scripts/radio-stations-opml.mjs --json --tag talk --limit 3 --order random
 //
 // Discovers candidates on Radio Browser, keeps only the ones that actually
 // serve audio *right now* (the "live at any given time" filter: a station that
@@ -12,11 +15,17 @@
 // is the whole setup: the holder serves it at /menu.opml and clicking a
 // station in the app starts its real-time audio.
 //
+// `--query`/`--country` search the directory at any time; `--json` prints the
+// matches for an agent tool and `--append` adds them to an existing menu under
+// a "Found" section (deduped by stream URL).
+//
 // Radio Browser is a discovery/health hint only — the directory is never the
 // relay (epic #118, #120). `--no-check` skips the liveness probe (offline use).
 //
 // shortcut: no schedule awareness — "live now" means the stream answers, not
 // that a live show is on; refine against programme data when #120 lands.
+
+import { readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -26,9 +35,15 @@ const opt = (name, fallback) => {
 const flag = (name) => args.includes(`--${name}`);
 
 const LIMIT = Number(opt("limit", "12"));
-const TAGS = opt("tag", "talk");
+const QUERY = opt("query", "");
+const COUNTRY = opt("country", "");
+// `--tag` wins; an unfiltered search must not silently become "talk".
+const TAGS = args.includes("--tag") ? opt("tag", "") : QUERY || COUNTRY ? "" : "talk";
+const ORDER = opt("order", "clickcount"); // clickcount | random
 const GROUP = opt("group", "country"); // country | none
 const OUT = opt("out", "");
+const APPEND = opt("append", "");
+const JSON_OUT = flag("json");
 const CHECK = !flag("no-check");
 const USER_AGENT = "idfon-radio-stations/1 (menu contact curation)";
 
@@ -60,11 +75,19 @@ async function isLive(url) {
 }
 
 async function discover() {
-  const url =
-    "https://de1.api.radio-browser.info/json/stations/search" +
-    `?tag=${encodeURIComponent(TAGS)}&hidebroken=true&order=clickcount&reverse=true` +
-    `&limit=${LIMIT * 4}`;
-  const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  const params = new URLSearchParams({
+    hidebroken: "true",
+    order: ORDER,
+    limit: String(LIMIT * 4),
+  });
+  if (ORDER !== "random") params.set("reverse", "true");
+  if (QUERY) params.set("name", QUERY);
+  if (COUNTRY) params.set("country", COUNTRY);
+  if (TAGS) params.set("tag", TAGS);
+  const response = await fetch(
+    `https://de1.api.radio-browser.info/json/stations/search?${params}`,
+    { headers: { "User-Agent": USER_AGENT } },
+  );
   if (!response.ok) throw new Error(`radio-browser: HTTP ${response.status}`);
   const stations = await response.json();
   // Dedupe on the resolved stream URL; prefer higher-bitrate mirrors.
@@ -85,9 +108,10 @@ async function discover() {
   return [...seen.values()];
 }
 
+const outline = (entry) =>
+  `    <outline text="${escapeXml(entry.name)}" type="audio" url="${escapeXml(entry.stream)}" />`;
+
 function toOpml(stations) {
-  const outline = (entry) =>
-    `    <outline text="${escapeXml(entry.name)}" type="audio" url="${escapeXml(entry.stream)}" />`;
   let body;
   if (GROUP === "none") {
     body = stations.map(outline).join("\n");
@@ -116,22 +140,39 @@ ${body}
 `;
 }
 
-const candidates = await discover();
-const live = [];
-for (const station of candidates) {
-  if (live.length >= LIMIT) break;
-  if (CHECK && !(await isLive(station.stream))) continue;
-  live.push(station);
+/** Add matches to an existing menu, skipping stream URLs it already carries. */
+function appendToMenu(file, stations) {
+  const existing = readFileSync(file, "utf8");
+  const fresh = stations.filter((station) => !existing.includes(`url="${escapeXml(station.stream)}"`));
+  if (!fresh.length) {
+    console.error(`radio-stations-opml: all ${stations.length} already in ${file}`);
+    return;
+  }
+  if (!existing.includes("</body>")) throw new Error(`${file} has no </body>`);
+  const block = `  <outline text="Found">\n${fresh.map(outline).join("\n")}\n  </outline>\n`;
+  writeFileSync(file, existing.replace("</body>", `${block}</body>`));
+  console.error(`radio-stations-opml: ${fresh.length} stations → ${file}`);
 }
+
+const candidates = await discover();
+// Probe in parallel: a dead station can take the full 6 s timeout, and a
+// sequential pass over every candidate would stall a chat turn.
+const checked = CHECK
+  ? await Promise.all(
+      candidates.map(async (station) => ((await isLive(station.stream)) ? station : null)),
+    )
+  : candidates;
+const live = checked.filter(Boolean).slice(0, LIMIT);
 if (live.length === 0) {
-  console.error("radio-stations-opml: no live stations found; try --no-check or a wider --tag");
+  console.error("radio-stations-opml: no live stations found; try --no-check or a wider search");
   process.exit(1);
 }
-const opml = toOpml(live);
-if (OUT) {
-  const { writeFileSync } = await import("node:fs");
-  writeFileSync(OUT, opml);
+if (APPEND) appendToMenu(APPEND, live);
+if (JSON_OUT) {
+  process.stdout.write(`${JSON.stringify(live, null, 2)}\n`);
+} else if (OUT) {
+  writeFileSync(OUT, toOpml(live));
   console.error(`radio-stations-opml: ${live.length} live stations → ${OUT}`);
 } else {
-  process.stdout.write(opml);
+  process.stdout.write(toOpml(live));
 }

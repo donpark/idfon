@@ -68,15 +68,31 @@ a whole agent unit — see **The radio-world agent** below.
 - The caller selects with a `show=<menu path>` line in the same per-contact
   context as `topic=` — `News/Morning Briefing`, or 1-based indices like `1/2`
   (segments are case-insensitive and mixable). It beats the station default:
-  the call plays the chosen show and nothing else.
+  the call starts with the chosen show; when it ends or drops, the rotation
+  continues with a fresh station (below).
 - Far-end sources play too: ffmpeg decodes the stream (HLS, ICY/MP3, AAC) to
-  the station's 24 kHz at call time (`stream.rs` `run_stream`). shortcut: a
-  dropped source ends the call (`eof`); retry-with-backoff is shared ingest
-  recovery (#119).
+  the station's 24 kHz at call time (`stream.rs` `run_stream`). A menu pick is
+  a **rotation**: audio then a clean EOF hands the air to a fresh live station
+  from the **station search** — `radio-stations-opml.mjs --json --order random
+  --tag talk --limit 3`, the same script behind the `radio-stations` tool —
+  played directly. A station that drops is retried twice with a 1 s backoff
+  first; if it still fails, the search hands over the same way. The committed
+  menu is the fallback when the search cannot run or finds nothing, and the
+  call ends when a whole menu round has failed. Searches are at most one per
+  30 s, so a short clip cannot spin the directory. This needs
+  `IDFON_RADIO_ROOT` (exported by `radio-world-serve.sh`); other stations keep
+  cycling their menu. The app keeps showing the station that was picked; the
+  audio may already be another one. Topic-aware scheduling is still future
+  work (submissions + `compile`).
 - `scripts/radio-stations-opml.mjs` curates a starter menu from real online
   talk stations (Radio Browser discovery + a liveness probe that reads real
   audio bytes) — its output is the `shows.opml` above; the end-to-end run is
-  the #135 acceptance gate.
+  the #135 acceptance gate. The same script is the **runtime search** behind
+  the `radio-stations` tool and the stream backend's continuation: `--query`,
+  `--country`, `--tag`, `--limit`, and `--json` select and print stations,
+  `--tag`/`--country` are optional for a broad search, and `--append <menu>`
+  adds matches under a deduped `Found` section. Candidate probes run in
+  parallel, so a dead station cannot stall a chat turn.
 - The holder exposes the OPML as a resource — `idfon://<holder>/menu.opml`,
   advertised as `menu.opml` in the `idfon.json` manifest (an agent-supplied
   `menu` block wins) — fetched by the apps like the voice catalog. A manifest
@@ -123,6 +139,13 @@ pnpm agent clean radio-world
   wraps `scripts/radio-program.mjs` (`submit`/`fallback`/`brief`/`segment`/
   `find`/`compile`) for this station's instance — the caller asks in chat, the
   agent programs.
+- **Searching the directory is a tool too.** The `radio-stations` tool wraps
+  `scripts/radio-stations-opml.mjs --json` — Radio Browser search by name,
+  country, or tag, liveness-checked. `add: true` appends the matches to
+  `shows.opml` under a deduped `Found` section, so a following `radio-menu`
+  shows them as Play choices, and a following call's rotation can include
+  them. It does not edit the *running* call's menu list. Without `add` it only
+  reports; nothing is written.
 - Per-station state stays where the roster put it (`agents/radio/instances/
   radio-world/`, `~/.idfon/radio-world/`); the agent directory is the unit you
   build, start and stop.
@@ -415,8 +438,13 @@ a **subject-less, receive-only** ticket (`ticket --public`). The link becomes an
 envelope:
 
 ```
-idfon://add/<b64url({ "contact": <card>, "capability": <station ticket> })>
+idfon://add/<b64url({ "contact": <card>, "capability": "<rcan token>" })>
 ```
+
+`capability` is the **base32 `rcan` token string** `ticket --public` prints, not
+its JSON face: the app stores the token verbatim (`CapabilityTicketToken`),
+and an embedded JSON document is not a credential. The page command checks
+this before writing.
 
 The apps decode the envelope, add the contact, and store the capability ticket
 under that peer — so one scan both adds the topic and makes it callable. A
@@ -550,10 +578,12 @@ One JSON object per line, `t_ms` from call start:
 | `start` | `slots`, `fallback`, `loop`, `rate` | what this call was programmed with |
 | `slot` | `at`, `file`, `title`, `topic`, `origin`, `note` | programme change (incl. `fallback` / `none`) |
 | `schedule` | `slots` | an edit was reloaded mid-call |
-| `error` | `message` | a slot clip or schedule edit could not be used |
+| `station` | `name`, `attempt` | a station is being tried (search pick or menu order) |
+| `search` | `name` | the directory search chose the next station |
+| `error` | `message` | a slot clip, schedule edit, or station attempt failed |
 | `heartbeat` | `sent_s`, `queued_ms` | 1 Hz: the agent is still feeding the encoder |
 | `gap` | `late_ms` | the **agent host** missed a 20 ms tick (not the network) |
-| `eof` / `stop` | `sent_s` (eof) | a non-looping fallback ended, or the caller hung up |
+| `eof` / `stop` | `sent_s` (eof) | a source/fallback ran out, or the caller hung up |
 
 `gap` is the only agent-side quality signal here. Everything else about the
 call (handover, jitter, playout lag) lives on the phone's side

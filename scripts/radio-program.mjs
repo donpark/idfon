@@ -652,11 +652,18 @@ async function page() {
       // One scan adds the contact AND the receive-only credential any sender
       // may present. Refused unless this station's live config opted in.
       const capability = await publicTicket(station);
+      // The app stores this string verbatim. A JSON ticket is not a
+      // credential: `store` rejects it, and the station would never call.
+      if (!/^[a-z2-7]+$/.test(capability)) {
+        throw new Error(`${station.instance}: ticket --public did not print an rcan token`);
+      }
       // `label` is not part of an EndpointAddr but serde ignores it; the app
       // reads it to name the contact ("Add Tech Talk?") instead of "Contact".
       payload = JSON.stringify({
         contact: { ...JSON.parse(contact), label: station.name ?? station.instance },
-        capability: JSON.parse(capability),
+        // The app stores the `rcan` token string as-is. `ticket --public`
+        // prints that token; parsing it as JSON is what broke this page.
+        capability,
       });
     }
     const link = `idfon://add/${Buffer.from(payload, "utf8").toString("base64url")}`;

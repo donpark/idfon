@@ -714,6 +714,45 @@ and every subsequent daemon start failed with
 new daemon now takes the lock over when that PID is dead. See the
 `data_lock_recovers_stale_lock_from_dead_pid` test.
 
+## iOS says "daemon not reachable" / "Connect failed" (2026-11-06)
+
+**Symptom.** Every add and call on iOS failed with `daemon not reachable`
+(the app's connect error) or `Connect failed: …`; the Mac and CLI were fine.
+
+**Diagnosis.** A `devicectl … --console` launch showed the embedded daemon
+exiting before it opened its socket:
+
+```
+idfond: invalid type: map, expected a string at line 1 column 11058
+idfond exited with -2
+idfon events: wait failed, backing off: daemon not reachable
+```
+
+The persisted `state.json` (in the app's
+`Library/Application Support/Idfon/daemon/`) held an
+`Operation.outbound.capability_ticket` as a JSON **object** — an older page-era
+ticket shape. `MessageEnvelope` expects the base32 `rcan` token string, so the
+whole state failed to deserialize and the daemon never started.
+
+**Fix.** `capability_ticket` now deserializes tolerantly: a string is kept,
+any other legacy value is treated as absent (it was never a usable
+credential). The old state loads and is rewritten in the current shape.
+Regression test: `a_legacy_json_capability_ticket_loads_as_absent` in
+`idfon-protocol`.
+
+**Lesson.** The state decoder runs inside `libiroh_c_ffi`, not the `idfond`
+launcher — rebuild the FFI and the app (`ios/build-deps.sh`, or `pnpm build`);
+`cargo build -p idfond` alone is a no-op (see the launcher note above).
+
+## Several `idfond` processes at once (2026-11-06)
+
+Multiple processes are expected when each has its **own socket and data dir**:
+CLI-spawned daemons, per-station holders, test runs, and old worktree builds.
+They cannot share state. `DataLock` takes an exclusive lock on
+`<data_dir>/state.lock`, and a second daemon on the same data dir exits with
+`data directory is already locked: …/state.lock`. Kill an orphaned test daemon
+by its socket path rather than by binary name, or you may stop the app's.
+
 ## Garbage text in the call-error banner (2026-09-09)
 
 **Symptom.** Pressing the video-call button showed a banner of mojibake

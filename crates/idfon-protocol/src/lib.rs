@@ -48,6 +48,20 @@ pub struct MessageSend {
     pub conversation: Option<String>,
 }
 
+/// The `rcan` token is a string. A pre-2026-11 build persisted the ticket's
+/// JSON face here (an object); it is not a credential, but an old state must
+/// still load or the daemon cannot start. Treat anything else as absent.
+fn capability_ticket_token<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    Ok(match Option::<serde_json::Value>::deserialize(deserializer)? {
+        Some(serde_json::Value::String(token)) => Some(token),
+        _ => None,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageEnvelope {
     pub message_id: MessageId,
@@ -57,7 +71,11 @@ pub struct MessageEnvelope {
     /// The sender's `rcan` capability ticket token (base32, see
     /// `idfon_core::CapabilityTicket`). Opaque here: the receiving side decodes
     /// and verifies it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "capability_ticket_token"
+    )]
     pub capability_ticket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
@@ -984,5 +1002,21 @@ mod hybrid_route_tests {
         let json = serde_json::to_string(&route).unwrap();
         let back: VoiceRoute = serde_json::from_str(&json).unwrap();
         assert_eq!(back, route);
+    }
+
+    #[test]
+    fn a_legacy_json_capability_ticket_loads_as_absent() {
+        // Pre-2026-11 state persisted the ticket's JSON face, which made the
+        // daemon exit on startup ("invalid type: map, expected a string").
+        let envelope = serde_json::json!({
+            "message_id": "msg_1",
+            "sender": { "peer_id": "a", "endpoint_id": "a", "signature": "s" },
+            "content": { "type": "text", "text": "hi" },
+            "idempotency_key": "k",
+            "capability_ticket": { "issuer": "a", "capabilities": ["message.receive"] }
+        });
+        let envelope: MessageEnvelope =
+            serde_json::from_value(envelope).expect("legacy state must load");
+        assert!(envelope.capability_ticket.is_none());
     }
 }

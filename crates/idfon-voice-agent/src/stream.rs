@@ -7,6 +7,8 @@
 //! HTTP) would consume the same programme port and leave this file alone.
 //!
 //! Advertised as `voice_route.mode = broadcast`: an idfon caller listens.
+//! A menu pick is a rotation: when a station plays out (or drops and cannot be
+//! retried) the next playable entry takes over, so the call keeps going.
 
 use std::{
     fs::OpenOptions,
@@ -41,16 +43,31 @@ const LATE_MS: u128 = 40;
 const HEARTBEAT: Duration = Duration::from_secs(1);
 /// A far-end source silent this long is gone, not busy.
 const STALL_S: u64 = 30;
+/// A dropped station is retried this many times before the rotation moves on.
+const STATION_RETRIES: usize = 2;
+const RETRY_BACKOFF: Duration = Duration::from_secs(1);
+/// Ask the station directory for the next station at most this often.
+const SEARCH_EVERY: Duration = Duration::from_secs(30);
+/// A directory search includes liveness probes; give it room, not forever.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 const OUTPUT_RATE: u32 = idfon_radio::OUTPUT_RATE;
 
 /// `backend: "stream"` — one factory per runner, one backend per call.
 pub struct StreamFactory;
 
 /// What a call plays: a station programme (schedule or a cached clip), or a
-/// far-end source decoded at call time.
+/// menu pick and the stations after it (far-end sources and cached copies).
 enum Play {
     Programme(Programme),
-    Remote(String),
+    Rotation {
+        /// Menu display order, the caller's pick first in `start`.
+        stations: Vec<(String, Source)>,
+        start: usize,
+        loop_fallback: bool,
+        /// The agent's repo root when it exposes the station search script;
+        /// `None` keeps the committed menu as the only source.
+        search_root: Option<PathBuf>,
+    },
 }
 
 impl VoiceBackendFactory for StreamFactory {
@@ -111,9 +128,9 @@ fn caller_line(params: &Value, prefix: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The play target for a menu selection: the chosen show's cached clip as a
-/// one-item programme, or its far-end source — decoded to call frames at play
-/// time. The `opml` menu is the contact's config.
+/// The play target for a menu selection: the catalogue in display order with
+/// the chosen show at `start`, so a finished or dropped station hands over to
+/// the next one. The `opml` menu is the contact's config.
 fn show_play(params: &Value, show: &str) -> Result<(Play, Option<String>)> {
     let path = params
         .get("opml")
@@ -122,14 +139,24 @@ fn show_play(params: &Value, show: &str) -> Result<(Play, Option<String>)> {
         .context("a `show=` selection needs an `opml` menu in the agent config")?;
     let menu = Menu::load(Path::new(path))?;
     let entry = menu.resolve(show)?;
-    let play = match entry.source()? {
-        Source::Local(file) => Play::Programme(Programme::open(ProgrammeConfig {
-            schedule: None,
-            fallback: Some(file),
-            loop_fallback: params.get("loop").and_then(Value::as_bool).unwrap_or(true),
-            topic: None,
-        })?),
-        Source::Remote(url) => Play::Remote(url),
+    // The asked-for show must play now; the call declines otherwise.
+    entry.source()?;
+    let mut stations: Vec<(String, Source)> = Vec::new();
+    let mut start = 0;
+    for item in menu.playable() {
+        let Ok(source) = item.source() else { continue };
+        // The resolved entry lives in the same menu, so identity is the index.
+        if std::ptr::eq(item, entry) {
+            start = stations.len();
+        }
+        stations.push((item.title.clone(), source));
+    }
+    ensure!(!stations.is_empty(), "menu {path} has no playable entries");
+    let play = Play::Rotation {
+        stations,
+        start,
+        loop_fallback: params.get("loop").and_then(Value::as_bool).unwrap_or(true),
+        search_root: std::env::var_os("IDFON_RADIO_ROOT").map(PathBuf::from),
     };
     let topic = params
         .get("topic")
@@ -151,7 +178,7 @@ impl VoiceBackend for StreamBackend {
         "stream"
     }
 
-    fn run(&mut self, media: VoiceMedia) -> BackendFuture<'_> {
+    fn run(&mut self, mut media: VoiceMedia) -> BackendFuture<'_> {
         let mut record = Recorder::new(self.log.clone(), self.topic.clone());
         match &mut self.play {
             Play::Programme(programme) => Box::pin(async move {
@@ -171,18 +198,23 @@ impl VoiceBackend for StreamBackend {
                     programme,
                     &media.audio,
                     &media.stop,
-                    media.caller,
+                    &mut media.caller,
                     &mut record,
                 )
                 .await;
                 record.event("stop", []);
                 result
             }),
-            Play::Remote(url) => Box::pin(async move {
-                // Far-end sources decode to the station's 24 kHz the same way.
+            Play::Rotation {
+                stations,
+                start,
+                loop_fallback,
+                search_root,
+            } => Box::pin(async move {
+                // Menu shows decode to / are the station's 24 kHz the same way.
                 ensure!(
                     media.profile.sample_rate == idfon_radio::OUTPUT_RATE,
-                    "far-end sources decode to {} Hz but the call carries {} Hz; set voice_route.audio = \"pcm24k\"",
+                    "menu shows play at {} Hz but the call carries {} Hz; set voice_route.audio = \"pcm24k\"",
                     idfon_radio::OUTPUT_RATE,
                     media.profile.sample_rate
                 );
@@ -191,13 +223,17 @@ impl VoiceBackend for StreamBackend {
                     [
                         ("rate", Value::from(idfon_radio::OUTPUT_RATE)),
                         ("backend", Value::from("ffmpeg")),
+                        ("stations", Value::from(stations.len())),
                     ],
                 );
-                let result = run_stream(
-                    url,
+                let result = run_rotation(
+                    stations.clone(),
+                    *start,
+                    *loop_fallback,
+                    search_root.as_deref(),
                     &media.audio,
                     &media.stop,
-                    media.caller,
+                    &mut media.caller,
                     &mut record,
                 )
                 .await;
@@ -213,7 +249,7 @@ async fn run_call(
     programme: &mut Programme,
     audio: &AudioQueue,
     stop: &AtomicBool,
-    mut caller: mpsc::Receiver<Vec<i16>>,
+    caller: &mut mpsc::Receiver<Vec<i16>>,
     record: &mut Recorder,
 ) -> Result<()> {
     let mut frame = vec![0i16; FRAME_SAMPLES];
@@ -263,44 +299,209 @@ async fn run_call(
     }
 }
 
+/// How one station attempt ended.
+enum Outcome {
+    /// It played and ended on its own: the next station takes over.
+    Ended,
+    /// It never played or dropped mid-show: a retry can help.
+    Failed(String),
+}
+
+/// Play the menu from the caller's pick. A station that fails is retried; a
+/// station that ends (or one that cannot be recovered) hands the air to a
+/// fresh live station from the directory search, or to the next menu entry
+/// when the search is unavailable. The call ends only when a whole menu pass
+/// has failed.
+async fn run_rotation(
+    mut stations: Vec<(String, Source)>,
+    start: usize,
+    loop_fallback: bool,
+    search_root: Option<&Path>,
+    audio: &AudioQueue,
+    stop: &AtomicBool,
+    caller: &mut mpsc::Receiver<Vec<i16>>,
+    record: &mut Recorder,
+) -> Result<()> {
+    let floor = stations.len();
+    let mut index = start;
+    let mut retries = 0;
+    let mut dead = 0;
+    let mut last_search: Option<Instant> = None;
+    loop {
+        // Own the entry so the search may append to `stations` below.
+        let (title, source) = stations[index].clone();
+        record.event(
+            "station",
+            [
+                ("name", Value::from(title.as_str())),
+                ("attempt", Value::from(retries as u64 + 1)),
+            ],
+        );
+        let outcome = match &source {
+            Source::Remote(url) => run_stream(url, audio, stop, caller, record).await,
+            Source::Local(file) => match Programme::open(ProgrammeConfig {
+                schedule: None,
+                fallback: Some(file.clone()),
+                loop_fallback,
+                topic: None,
+            }) {
+                Ok(mut programme) => {
+                    run_call(&mut programme, audio, stop, caller, record).await?;
+                    Outcome::Ended
+                }
+                Err(error) => Outcome::Failed(format!("{error:#}")),
+            },
+        };
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match outcome {
+            Outcome::Ended => {
+                retries = 0;
+                dead = 0;
+                index = next_station(
+                    &mut stations,
+                    index,
+                    &source,
+                    search_root,
+                    &mut last_search,
+                    record,
+                )
+                .await
+                .0;
+            }
+            Outcome::Failed(message) => {
+                record.event("error", [("message", Value::from(message))]);
+                if retries < STATION_RETRIES {
+                    retries += 1;
+                    tokio::time::sleep(RETRY_BACKOFF).await;
+                } else {
+                    retries = 0;
+                    dead += 1;
+                    let (next, fresh) = next_station(
+                        &mut stations,
+                        index,
+                        &source,
+                        search_root,
+                        &mut last_search,
+                        record,
+                    )
+                    .await;
+                    // A directory station is a fresh start, not a menu pass.
+                    if fresh {
+                        dead = 0;
+                    }
+                    index = next;
+                }
+            }
+        }
+        if dead >= floor {
+            anyhow::bail!("all {floor} stations failed to play");
+        }
+    }
+}
+
+/// The station to try next: a fresh pick from the station directory when the
+/// search is available and not rate-limited, otherwise the next menu entry
+/// (wrapping). The flag says the pick came from a search.
+async fn next_station(
+    stations: &mut Vec<(String, Source)>,
+    index: usize,
+    current: &Source,
+    root: Option<&Path>,
+    last_search: &mut Option<Instant>,
+    record: &mut Recorder,
+) -> (usize, bool) {
+    let searchable = last_search.is_none_or(|at| at.elapsed() >= SEARCH_EVERY);
+    if let (Some(root), true) = (root, searchable) {
+        *last_search = Some(Instant::now());
+        let skip = match current {
+            Source::Remote(url) => url.as_str(),
+            Source::Local(_) => "",
+        };
+        if let Some((title, source)) = search_station(root, skip).await {
+            record.event("search", [("name", Value::from(title.as_str()))]);
+            stations.push((title, source));
+            return (stations.len() - 1, true);
+        }
+    }
+    ((index + 1) % stations.len(), false)
+}
+
+/// Ask the station directory for a live station other than `skip`: the same
+/// search script behind the radio-stations tool, at call time. `None` when
+/// the script cannot run, the directory is unreachable, or nothing is live —
+/// the caller then keeps the committed menu.
+async fn search_station(root: &Path, skip: &str) -> Option<(String, Source)> {
+    let script = root.join("scripts/radio-stations-opml.mjs");
+    let output = tokio::time::timeout(
+        SEARCH_TIMEOUT,
+        tokio::process::Command::new("node")
+            .arg(&script)
+            .args(["--json", "--limit", "3", "--order", "random", "--tag", "talk"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let found: Vec<Value> = serde_json::from_slice(&output.stdout).ok()?;
+    found.iter().find_map(|station| {
+        let url = station.get("stream")?.as_str()?;
+        if url == skip {
+            return None;
+        }
+        let name = station.get("name").and_then(Value::as_str)?;
+        Some((name.to_owned(), Source::Remote(url.to_owned())))
+    })
+}
+
 /// Pump a far-end source into the return leg until it ends or the call stops:
 /// ffmpeg decodes any stream URL (HLS, ICY/MP3, AAC) to the station's 24 kHz
-/// PCM and the frames are paced like a programme's.
-/// shortcut: no reconnect on a dropped source — the call ends with `eof`;
-/// retry-with-backoff lands with #119's recovery semantics.
+/// PCM and the frames are paced like a programme's. Audio then a clean EOF is
+/// the station finishing; no audio, a stall, or a non-zero exit is a drop.
 async fn run_stream(
     url: &str,
     audio: &AudioQueue,
     stop: &AtomicBool,
-    mut caller: mpsc::Receiver<Vec<i16>>,
+    caller: &mut mpsc::Receiver<Vec<i16>>,
     record: &mut Recorder,
-) -> Result<()> {
-    let mut child = tokio::process::Command::new("ffmpeg")
+) -> Outcome {
+    let mut child = match tokio::process::Command::new("ffmpeg")
         .args(["-loglevel", "error", "-nostdin", "-i", url])
         .args(["-f", "s16le", "-ar", "24000", "-ac", "1", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .context("spawn ffmpeg for the far-end source")?;
-    let mut stdout = child.stdout.take().context("ffmpeg stdout")?;
+    {
+        Ok(child) => child,
+        Err(error) => return Outcome::Failed(format!("spawn ffmpeg: {error}")),
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        return Outcome::Failed("ffmpeg has no stdout".to_owned());
+    };
     record.event("stream", [("url", Value::from(url))]);
     let mut frame = vec![0i16; FRAME_SAMPLES];
     let mut bytes = vec![0u8; FRAME_SAMPLES * 2];
     let mut sent = 0u64;
     let mut last_beat = Instant::now();
+    let mut failure: Option<String> = None;
     loop {
         while caller.try_recv().is_ok() {}
         if stop.load(Ordering::Relaxed) {
-            return Ok(());
+            return Outcome::Ended;
         }
         // Pace off the queue (~100 ms ahead), like the programme pump.
         if audio.queued_samples() >= TARGET_SAMPLES {
             tokio::time::sleep(Duration::from_millis(FRAME_MS as u64)).await;
             continue;
         }
-        // One 20 ms frame per read; EOF or a stall ends the call like a
-        // non-looping clip (kill_on_drop reaps ffmpeg either way).
+        // One 20 ms frame per read.
         let read = tokio::time::timeout(
             Duration::from_secs(STALL_S),
             tokio::io::AsyncReadExt::read_exact(&mut stdout, &mut bytes),
@@ -308,9 +509,13 @@ async fn run_stream(
         .await;
         match read {
             Ok(Ok(_)) => {}
+            Ok(Err(_)) if sent == 0 => {
+                failure = Some("the source sent no audio".to_owned());
+                break;
+            }
             Ok(Err(_)) => break, // EOF: the source ran out
             Err(_) => {
-                record.event("error", [("message", Value::from("source stalled"))]);
+                failure = Some("the source stalled".to_owned());
                 break;
             }
         }
@@ -331,22 +536,34 @@ async fn run_stream(
             );
         }
     }
-    record.event("eof", [("sent_s", Value::from(sent / OUTPUT_RATE as u64))]);
-    // Say why the source ended when ffmpeg says so (its stderr is small at
+    if failure.is_none() {
+        record.event("eof", [("sent_s", Value::from(sent / OUTPUT_RATE as u64))]);
+    }
+    // A stall leaves ffmpeg alive: stop it before reaping.
+    if failure.is_some() {
+        let _ = child.kill().await;
+    }
+    let status = child.wait().await;
+    if let Some(failure) = failure {
+        return Outcome::Failed(failure);
+    }
+    // A clean EOF can still be ffmpeg failing; its stderr says why (small at
     // `-loglevel error`, so the pipe cannot fill before we read it).
-    if let Ok(status) = child.wait().await {
+    if let Ok(status) = status {
         if !status.success() {
             let mut message = String::new();
             if let Some(mut stderr) = child.stderr.take() {
                 let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut message).await;
             }
             let message = message.trim();
-            if !message.is_empty() {
-                record.event("error", [("message", Value::from(message))]);
-            }
+            return Outcome::Failed(if message.is_empty() {
+                format!("ffmpeg exited {status}")
+            } else {
+                message.to_owned()
+            });
         }
     }
-    Ok(())
+    Outcome::Ended
 }
 
 /// JSONL soak record: one object per line, `t_ms` monotonic from the call.
@@ -589,6 +806,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn the_callers_show_starts_the_menu_rotation() {
+        let (dir, opml) = menu_dir(
+            "menu-rotation",
+            r#"<opml version="2.0"><body>
+                <outline text="News">
+                  <outline text="Morning" url="https://example.com/morning.m3u8" />
+                  <outline text="Evening" url="https://example.com/evening.m3u8" />
+                </outline>
+                <outline text="Tech" url="https://example.com/tech.m3u8" />
+            </body></opml>"#,
+        );
+        let params = serde_json::json!({ "opml": opml.to_str().expect("utf8") });
+        let (play, _) = show_play(&params, "News/Evening").expect("show");
+        let Play::Rotation { stations, start, .. } = play else {
+            panic!("a menu pick is a rotation");
+        };
+        let titles: Vec<&str> = stations.iter().map(|(title, _)| title.as_str()).collect();
+        // Menu order, and the caller's pick is where rotation starts.
+        assert_eq!(titles, ["Morning", "Evening", "Tech"]);
+        assert_eq!(start, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn pumps_a_far_end_source_into_the_queue() {
         if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
@@ -600,12 +841,11 @@ mod tests {
         let url = format!("file://{}", path.display());
         let audio = AudioQueue::new();
         let stop = Arc::new(AtomicBool::new(false));
-        let (_caller_tx, caller) = mpsc::channel(4);
+        let (_caller_tx, mut caller) = mpsc::channel(4);
         let mut record = Recorder::new(None, None);
-        run_stream(&url, &audio, &stop, caller, &mut record)
-            .await
-            .expect("run");
-        // Both frames arrived; the source ended and the call with it.
+        let outcome = run_stream(&url, &audio, &stop, &mut caller, &mut record).await;
+        // Both frames arrived and the source ending is a clean hand-over.
+        assert!(matches!(outcome, Outcome::Ended));
         assert_eq!(audio.queued_samples(), FRAME_SAMPLES * 2);
         let _ = std::fs::remove_file(path);
     }
@@ -628,18 +868,51 @@ mod tests {
         let mut programme = programme(path.clone(), true);
         let audio = AudioQueue::new();
         let stop = Arc::new(AtomicBool::new(false));
-        let (_caller_tx, caller) = mpsc::channel(4);
+        let (_caller_tx, mut caller) = mpsc::channel(4);
         let stopper = Arc::clone(&stop);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
             stopper.store(true, Ordering::Relaxed);
         });
         let mut record = Recorder::new(None, None);
-        run_call(&mut programme, &audio, &stop, caller, &mut record)
+        run_call(&mut programme, &audio, &stop, &mut caller, &mut record)
             .await
             .expect("run");
         assert_eq!(audio.queued_samples(), TARGET_SAMPLES);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_finished_station_hands_over_to_the_next() {
+        // Two menu entries; neither loops, so the first running out is the
+        // "show ended" case that must continue with the second.
+        let first = temp("rotate-first", &wav(&[1; FRAME_SAMPLES], 24_000));
+        let second = temp("rotate-second", &wav(&[2; 24_000], 24_000));
+        let stations = vec![
+            ("First".to_owned(), Source::Local(first.clone())),
+            ("Second".to_owned(), Source::Local(second.clone())),
+        ];
+        let audio = AudioQueue::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (_caller_tx, mut caller) = mpsc::channel(4);
+        let stopper = Arc::clone(&stop);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stopper.store(true, Ordering::Relaxed);
+        });
+        let log = std::env::temp_dir()
+            .join(format!("idfon-stream-{}-rotation.jsonl", std::process::id()));
+        let mut record = Recorder::new(Some(log.clone()), None);
+        run_rotation(stations, 0, false, None, &audio, &stop, &mut caller, &mut record)
+            .await
+            .expect("rotation");
+        let text = std::fs::read_to_string(&log).expect("log");
+        assert!(text.contains("\"name\":\"First\""), "{text}");
+        assert!(text.contains("\"name\":\"Second\""), "{text}");
+        assert!(audio.queued_samples() > 0);
+        for path in [first, second, log] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[tokio::test]
@@ -648,9 +921,9 @@ mod tests {
         let mut programme = programme(path.clone(), false);
         let audio = AudioQueue::new();
         let stop = Arc::new(AtomicBool::new(false));
-        let (_caller_tx, caller) = mpsc::channel(4);
+        let (_caller_tx, mut caller) = mpsc::channel(4);
         let mut record = Recorder::new(None, None);
-        run_call(&mut programme, &audio, &stop, caller, &mut record)
+        run_call(&mut programme, &audio, &stop, &mut caller, &mut record)
             .await
             .expect("run");
         assert!(audio.queued_samples() <= TARGET_SAMPLES);

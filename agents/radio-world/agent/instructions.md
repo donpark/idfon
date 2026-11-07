@@ -31,6 +31,13 @@ what changed in one or two sentences:
 
 `find` is the only search and `compile` only merges; re-run `compile` freely.
 
+## Searching the directory
+
+When the caller names a station, country, or genre the menu does not have, call
+`radio-stations` with that word. Matches are live-checked. Pass `add: true` to
+put them in the menu, then call `radio-menu` so the caller can pick one. Say in
+one short sentence what you found; never read the URL list aloud.
+
 ## Voice
 
 - Replies are short, spoken sentences — one to three. No markdown, lists,
