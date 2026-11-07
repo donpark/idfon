@@ -45,8 +45,12 @@ def scan(shards: str, tol_frames: int):
     return on, off
 
 
-def choose(on, off, per_class: int):
-    """Prefer sessions that supply both classes, so clips stay comparable."""
+def choose(on, off, per_class: int, exclude: set = frozenset()):
+    """Prefer sessions that supply both classes, so clips stay comparable.
+
+    `exclude` holds session ids already drawn into an earlier set, so a second
+    draw is disjoint and the pooled sample stays independent by conversation.
+    """
     by_on = {}
     for r in on:
         by_on.setdefault(r[0], []).append(r)
@@ -57,6 +61,8 @@ def choose(on, off, per_class: int):
     picked, used = [], set()
     n_on = n_off = 0
     for sid in both:
+        if sid in exclude:
+            continue
         if n_on >= per_class and n_off >= per_class:
             break
         if n_on < per_class:
@@ -67,12 +73,12 @@ def choose(on, off, per_class: int):
     for r in on:
         if n_on >= per_class:
             break
-        if r[0] not in used:
+        if r[0] not in used and r[0] not in exclude:
             picked.append(r); n_on += 1
     for r in off:
         if n_off >= per_class:
             break
-        if r[0] not in used:
+        if r[0] not in used and r[0] not in exclude:
             picked.append(r); n_off += 1
     return picked
 
@@ -149,6 +155,8 @@ def main() -> None:
     ap.add_argument("--dataset", default="anyreach-ai/dualturn-switchboard-turn-taking")
     ap.add_argument("--split", default="test")
     ap.add_argument("--max-rows", type=int, default=200, help="stop streaming after this many rows")
+    ap.add_argument("--exclude", nargs="+", default=[],
+                    help="session ids already used by an earlier set (keeps draws disjoint)")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
 
@@ -160,7 +168,7 @@ def main() -> None:
     os.makedirs(a.out, exist_ok=True)
     on, off = scan(a.shards, a.tolerance)
     print(f"ENDPOINT fires on-eot: {len(on)}  off-eot: {len(off)}", flush=True)
-    picked = choose(on, off, a.per_class)
+    picked = choose(on, off, a.per_class, set(a.exclude))
     targets = {}
     for sid, f, d in picked:
         targets.setdefault(sid, []).append((f, d))

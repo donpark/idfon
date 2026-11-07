@@ -636,7 +636,10 @@ So the label is a valid positive but a noisy negative. A detector trained on
 negative class needs its own audit, not the label's silence.
 
 Caveat: n=10 per class over 10 Switchboard sessions, so the CIs are wide; the
-100% and 50% are directionally solid but the exact rates are not.
+100% and 50% are directionally solid but the exact rates are not. A second,
+disjoint 20-clip set (10 other sessions, `bench-results/endpoint-audit2-2026-11-06/`,
+`--exclude` on the drawer) is staged for a second listening pass to double n and
+tighten the CIs; the verdict above is the first set alone.
 
 ### Event catalog for training clips (step 3, 2026-11-06)
 
