@@ -1395,8 +1395,17 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         super.viewDidAppear()
         if !stationMenuOffered, !conversation.isRoom {
             stationMenuOffered = true
-            Task { await presentStationMenuIfAny() }
+            Task { await enterStationSurface() }
         }
+    }
+
+    /// Opening a broadcast contact is tuning in: a menu shows its outline and
+    /// waits for a pick, a single station connects and plays.
+    private func enterStationSurface() async {
+        guard CapabilityTickets.voiceRoute(for: peer.id)?.mode == .broadcast else { return }
+        if await presentStationMenuIfAny() { return }
+        guard case .idle = live.state else { return }
+        live.dial(peer.id)
     }
 
     /// Ends whichever machine owns the call (fullscreen stage + Bar).

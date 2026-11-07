@@ -61,7 +61,7 @@ final class MenuViewController: UITableViewController {
             // The station gets its own screen; the call starts playing it and
             // Back returns to this list (the chat stays below, never skipped).
             navigationController?.pushViewController(
-                StationDetailViewController(entry: entry, peerID: peerID), animated: true)
+                StationDetailViewController(entry: entry, peerID: peerID, show: path), animated: true)
             onPlay(path)
         }
     }

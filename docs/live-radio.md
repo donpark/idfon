@@ -133,9 +133,10 @@ pnpm agent clean radio-world
   (`agents/radio-world/agent/tools/`) renders the catalogue as a json-render
   block — a `Menu` of Play choices plus an `Input` for typed requests
   (`docs/reply-blocks.md`). A pick dispatches `idfon.call`, the app's dial
-  verb, and the call plays it; **hanging up is the off switch**. The same
-  `shows.opml` feeds the contact's detail surface (`menu.opml`), so the two
-  views can never disagree.
+  verb, and the station plays it; **Stop in the station screen (or the call
+  Bar) is the off switch**. Opening a single-station contact tunes it in
+  without a call press. The same `shows.opml` feeds the contact's detail
+  surface (`menu.opml`), so the two views can never disagree.
 - **Programming is a tool, not a script you run.** The `radio-program` tool
   wraps `scripts/radio-program.mjs` (`submit`/`fallback`/`brief`/`segment`/
   `find`/`compile`) for this station's instance — the caller asks in chat, the
@@ -599,15 +600,17 @@ the useful default: the uplink stays real, so congestion control, ABR and the
 5-tuple are exercised the way a real call exercises them, while the agent
 simply drops whatever it hears.
 
-- **silent uplink (default, today)** — mic on, agent ignores it. Honest
-  two-way network, one-way audio. The holder still *subscribes* to the
-  caller's track (`stt_side` defaults to `server` for a broadcast route) and
-  the backend drains it, so the uplink is real media, not just a keepalive.
-- **receive-only** — mic closed. Not implemented: it needs a per-call flag and
-  an app-side mic policy. Worth adding for battery on long walks and for
-  isolating pure-downlink behaviour, but it *removes* the uplink-saturation
-  failure mode (`docs/media-adaptation.md` A4/A5), so it is a bisect tool, not
-  the default soak.
+- **mic on (soak/call path)** — the ordinary call (`-voiceagent` soaks,
+  duplex agents) still captures. The holder subscribes to the caller's track
+  (`stt_side` defaults to `server` for a broadcast route) and drains it, so the
+  uplink is real media, not just a keepalive.
+- **broadcast contacts: no capture** — a dial whose ticket says
+  `voice_route.mode = broadcast` does not start `AudioPusher`; the live
+  publisher still exists only to carry the invite ticket, so the uplink is
+  silence and the microphone is never opened by the app. Full receive-only (no
+  publisher, playback-only audio session) is still future work; it *removes*
+  the uplink-saturation failure mode (`docs/media-adaptation.md` A4/A5), so it
+  would be a bisect tool rather than the default soak.
 
 ## Limits
 

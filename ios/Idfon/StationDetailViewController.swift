@@ -13,11 +13,14 @@ extension Notification.Name {
 final class StationDetailViewController: UIViewController {
     private let entry: MenuEntry
     private let peerID: String
+    private let show: String
     private let status = UILabel()
+    private let control = UIButton(type: .system)
 
-    init(entry: MenuEntry, peerID: String) {
+    init(entry: MenuEntry, peerID: String, show: String) {
         self.entry = entry
         self.peerID = peerID
+        self.show = show
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -51,7 +54,10 @@ final class StationDetailViewController: UIViewController {
         status.font = .preferredFont(forTextStyle: .subheadline)
         status.textAlignment = .center
 
-        let stack = UIStackView(arrangedSubviews: [icon, name, source, status])
+        control.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        control.addTarget(self, action: #selector(controlTapped), for: .touchUpInside)
+
+        let stack = UIStackView(arrangedSubviews: [icon, name, source, status, control])
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -81,12 +87,26 @@ final class StationDetailViewController: UIViewController {
         case .calling(let peer) where peer == peerID:
             status.text = "Tuning…"
             status.textColor = .secondaryLabel
+            control.setTitle("Stop", for: .normal)
         case .inCall(let peer) where peer == peerID:
             status.text = "Playing"
             status.textColor = .systemGreen
+            control.setTitle("Stop", for: .normal)
         default:
             status.text = "Not playing"
             status.textColor = .secondaryLabel
+            control.setTitle("Play", for: .normal)
+        }
+    }
+
+    /// The station owns its off switch; the call Bar is a secondary surface.
+    @objc private func controlTapped() {
+        if case .inCall(let peer) = LiveCall.shared.state, peer == peerID {
+            LiveCall.shared.hangUp()
+        } else if case .calling(let peer) = LiveCall.shared.state, peer == peerID {
+            LiveCall.shared.hangUp()
+        } else if case .idle = LiveCall.shared.state {
+            LiveCall.shared.dial(peerID, show: show)
         }
     }
 }

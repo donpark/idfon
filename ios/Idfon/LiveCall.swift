@@ -21,11 +21,12 @@ enum LiveCallHarness {
     /// Configure the audio session before any daemon audio starts. `ringing`
     /// forces the ringtone to the loudspeaker (the call may have a connected
     /// but unworn headset); answer/dial use the normal call route.
-    static func activateAudioSession(ringing: Bool = false) {
+    static func activateAudioSession(ringing: Bool = false, listen: Bool = false) {
         // The single audio owner configures the session (`liveCall` profile:
         // `.voiceChat` + speaker, remote audio on its playback bus = the
-        // AEC reference; docs/audio-media.md, docs/troubleshooting.md).
-        AudioIO.shared.start(profile: ringing ? .ringing : .liveCall)
+        // AEC reference; docs/audio-media.md, docs/troubleshooting.md). A
+        // broadcast station is `.listen`: playback only, no input tap.
+        AudioIO.shared.start(profile: listen ? .listen : (ringing ? .ringing : .liveCall))
     }
 
     /// Dial a peer and stream the bundled WAV. Blocks until the callee hangs
@@ -127,7 +128,7 @@ final class LiveCall {
     /// invite.
     func setAudioMode(_ mode: CallAudioMode) {
         setAudioEnabled(true)
-        guard published, let peer = activePeer else { return }
+        guard published, let peer = activePeer, !isBroadcast(peer) else { return }
         // The agent plane is mono at 24 kHz whichever codec carries it.
         let want = ContactAudioProfiles.profile(for: peer).sampleRate == 48_000
             ? AudioIO.captureChannelsForCall()
@@ -139,7 +140,7 @@ final class LiveCall {
     /// The panel's Stereo toggle: re-publish the mic leg when it changes the
     /// stream layout (silence at the new layout keeps a muted leg simple).
     func setStereo(_ on: Bool) {
-        guard published, let peer = activePeer else { return }
+        guard published, let peer = activePeer, !isBroadcast(peer) else { return }
         let want = ContactAudioProfiles.profile(for: peer).sampleRate == 48_000
             ? AudioIO.captureChannelsForCall()
             : 1
@@ -149,6 +150,7 @@ final class LiveCall {
 
     /// Re-publish the mic leg at a new channel count and re-invite the peer.
     private func republishAudio(channels: Int, peer: String) async {
+        guard !isBroadcast(peer) else { return }
         let profile = ContactAudioProfiles.profile(for: peer)
         AudioPusher.shared.retarget(channels: channels)
         await Task.detached(priority: .userInitiated) { media_live_stop() }.value
@@ -234,6 +236,11 @@ final class LiveCall {
     /// The contact's stored endpoint address (the one pairing saved). Cached
     /// for the call: the media plane re-subscribes on every transition and a
     /// daemon round-trip per attempt is waste.
+    /// A station (broadcast route) is listen-only: no microphone capture.
+    private func isBroadcast(_ peer: String) -> Bool {
+        CapabilityTickets.voiceRoute(for: peer)?.mode == .broadcast
+    }
+
     private func peerAddrs(_ peerId: String?) async -> String {
         if let livePeerAddrs { return livePeerAddrs }
         guard let peerId, let peers = try? await client.peers() else { return "" }
@@ -356,7 +363,9 @@ final class LiveCall {
         }
         // `call_kit` channels dial through the system call UI — CallKit owns
         // the whole call lifecycle, both directions (docs/callkit-integration.md).
-        if IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
+        // A station is not a call: skip CallKit so the listen profile (no
+        // record session) and the station screen own it.
+        if !isBroadcast(peerRef), IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
             CallKitController.shared.startOutgoing(peerId: peerRef, video: false) { [weak self] in
                 self?.dialNow(peerRef, show: show)
             }
@@ -367,13 +376,14 @@ final class LiveCall {
 
     private func dialNow(_ peerRef: String, show: String? = nil) {
         operation?.cancel()
-        audioEnabled = audioAvailable // this session carries audio from the start
+        let station = isBroadcast(peerRef)
+        audioEnabled = audioAvailable && !station // this session carries audio from the start
         callPeer = peerRef
         apply(.dial(peer: peerRef))
         // The cue rides the shared playback bus (AudioIO): start the session
         // first or the tone is dropped before the dial task arms it.
-        LiveCallHarness.activateAudioSession()
-        CallTonePlayer.shared.start(.ringback)
+        LiveCallHarness.activateAudioSession(listen: station)
+        if !station { CallTonePlayer.shared.start(.ringback) }
         let epoch = life.epoch
         operation = Task {
             do {
@@ -386,6 +396,12 @@ final class LiveCall {
                 // Hangup files the health record under the peer: use the
                 // canonical id, not the ref the user dialed by name.
                 callPeer = peerId
+                // A broadcast station is listen-only: never capture the mic.
+                // The publisher still exists for the invite ticket; it carries
+                // silence (the holder drains the caller leg).
+                let broadcast = isBroadcast(peerId)
+                audioEnabled = audioAvailable && !broadcast
+                if broadcast { AudioIO.shared.start(profile: .listen) }
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.status())?.1 ?? "default"
                 let returnAddr = try await client.localEndpointAddr()
@@ -397,14 +413,16 @@ final class LiveCall {
                     "mode": AnyEncodable("record"),
                 ])
                 let profile = ContactAudioProfiles.profile(for: peerId)
-                LiveCallHarness.activateAudioSession()
+                LiveCallHarness.activateAudioSession(listen: broadcast)
                 // Stereo (docs/stereo-calls.md): the panel's audio mode picks
                 // the stream layout; pcm24k voice-agent calls stay mono —
                 // that plane is 20 ms mono PCM frames into ASR/TTS.
                 let channels = profile.sampleRate == 48_000 ? AudioIO.captureChannelsForCall() : 1
-                guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
-                    fail("microphone unavailable")
-                    return
+                if !broadcast {
+                    guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
+                        fail("microphone unavailable")
+                        return
+                    }
                 }
                 guard life.epoch == epoch, !Task.isCancelled else { return }
                 let ticket = await ffiString {

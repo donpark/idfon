@@ -181,6 +181,10 @@ final class LiveCall {
                     id = resolved
                 }
                 apply(.resolve(peer: id))
+                // Broadcast = listen-only: do not capture the mic. The invite
+                // still needs a publisher ticket; it carries silence.
+                let broadcast = CapabilityTickets.voiceRoute(for: id)?.mode == .broadcast
+                audioEnabled = !broadcast
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.identityId()) ?? "default"
                 let peerBytes = Array(peerId.utf8.map { AnyEncodable(Int($0)) })
@@ -190,10 +194,12 @@ final class LiveCall {
                     "kind": AnyEncodable("live_audio"),
                     "mode": AnyEncodable("record"),
                 ])
-                AudioMeter.shared.pushToEncoder = true
-                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
-                    fail("microphone unavailable")
-                    return
+                AudioMeter.shared.pushToEncoder = !broadcast
+                if !broadcast {
+                    guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
+                        fail("microphone unavailable")
+                        return
+                    }
                 }
                 guard life.epoch == epoch, !Task.isCancelled else { return }
                 let ticket = await ffiString {

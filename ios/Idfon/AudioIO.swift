@@ -77,6 +77,9 @@ final class AudioIO: AudioSource, AudioSink {
         /// Voice-memo recording: play-and-record so review playback shares the
         /// session, `.default` to match the previous recorder config.
         case recording
+        /// A broadcast station: playback only. No record session, no input
+        /// tap, no microphone prompt — the app is a listener here.
+        case listen
     }
 
     private var engine = AVAudioEngine()
@@ -184,19 +187,22 @@ final class AudioIO: AudioSource, AudioSink {
                 return
             }
             sessionOwnerIsCallKit = callKitOwnsSession
-            Automation.mark("audio: mic permission=\(AVAudioApplication.shared.recordPermission)")
-            AVAudioApplication.requestRecordPermission { granted in
-                // The engine start below can fail while the mic answer is
-                // still pending; retry on a grant. Still the one engine —
-                // `startEngine` rebuilds the same single graph, never a second.
-                guard granted else {
-                    Automation.mark("audio: mic permission denied")
-                    return
-                }
-                self.runOnAudio {
-                    guard self.profile == profile, !self.running else { return }
-                    Automation.mark("audio: retrying engine start after mic grant")
-                    self.startEngine()
+            // A listener never asks for the microphone.
+            if profile != .listen {
+                Automation.mark("audio: mic permission=\(AVAudioApplication.shared.recordPermission)")
+                AVAudioApplication.requestRecordPermission { granted in
+                    // The engine start below can fail while the mic answer is
+                    // still pending; retry on a grant. Still the one engine —
+                    // `startEngine` rebuilds the same single graph, never a second.
+                    guard granted else {
+                        Automation.mark("audio: mic permission denied")
+                        return
+                    }
+                    self.runOnAudio {
+                        guard self.profile == profile, !self.running else { return }
+                        Automation.mark("audio: retrying engine start after mic grant")
+                        self.startEngine()
+                    }
                 }
             }
             if running, self.profile == profile { return }
@@ -338,41 +344,46 @@ final class AudioIO: AudioSource, AudioSink {
         engine.attach(playbackPlayer)
         playbackMixer = AVAudioMixerNode()
         engine.attach(playbackMixer)
-        let input = engine.inputNode
-        // Order matters: enable voice processing while the engine is stopped,
-        // then connect the playback bus. Connecting first materializes the
-        // output graph at the pre-VPIO format and `setVoiceProcessingEnabled`
-        // raises an ObjC exception Swift cannot catch (docs/troubleshooting.md,
-        // "SIGABRT"). Skipped entirely on the stereo (headset) route — see
-        // `stereoCaptureAllowed`.
-        if Self.skipVoiceProcessing() {
-            Automation.mark("audio: voice-processing skipped (stereo capture, headset route)")
-        } else {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                Automation.mark("audio: voice-processing enabled profile=\(String(describing: profile))")
-            } catch {
-                Automation.mark("audio: voice-processing unsupported: \(error.localizedDescription)")
+        if profile != .listen {
+            let input = engine.inputNode
+            // Order matters: enable voice processing while the engine is stopped,
+            // then connect the playback bus. Connecting first materializes the
+            // output graph at the pre-VPIO format and `setVoiceProcessingEnabled`
+            // raises an ObjC exception Swift cannot catch (docs/troubleshooting.md,
+            // "SIGABRT"). Skipped entirely on the stereo (headset) route — see
+            // `stereoCaptureAllowed`.
+            if Self.skipVoiceProcessing() {
+                Automation.mark("audio: voice-processing skipped (stereo capture, headset route)")
+            } else {
+                do {
+                    try input.setVoiceProcessingEnabled(true)
+                    Automation.mark("audio: voice-processing enabled profile=\(String(describing: profile))")
+                } catch {
+                    Automation.mark("audio: voice-processing unsupported: \(error.localizedDescription)")
+                }
+                input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                    enableAdvancedDucking: false, duckingLevel: .min)
             }
-            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
-                enableAdvancedDucking: false, duckingLevel: .min)
-        }
-        engine.connect(playbackPlayer, to: playbackMixer, format: nil)
-        engine.connect(playbackMixer, to: engine.mainMixerNode, format: nil)
+            engine.connect(playbackPlayer, to: playbackMixer, format: nil)
+            engine.connect(playbackMixer, to: engine.mainMixerNode, format: nil)
 
-        input.removeTap(onBus: 0) // insurance: installTap aborts if one survived
-        // installTap raises an uncaturable ObjC exception on an invalid node
-        // format (0 Hz/0 ch while a device settles). Probe and recover through
-        // the failure streak instead of crashing: the nil-format tap itself
-        // follows the hardware and can never go stale.
-        let nodeFormat = input.outputFormat(forBus: 0)
-        guard nodeFormat.sampleRate > 0, nodeFormat.channelCount > 0 else {
-            Automation.mark("audio: invalid input format \(nodeFormat); recovering")
-            scheduleStartRetry(reason: "invalid input format")
-            return
-        }
-        input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, time in
-            self?.fanOut(buffer, at: time)
+            input.removeTap(onBus: 0) // insurance: installTap aborts if one survived
+            // installTap raises an uncaturable ObjC exception on an invalid node
+            // format (0 Hz/0 ch while a device settles). Probe and recover through
+            // the failure streak instead of crashing: the nil-format tap itself
+            // follows the hardware and can never go stale.
+            let nodeFormat = input.outputFormat(forBus: 0)
+            guard nodeFormat.sampleRate > 0, nodeFormat.channelCount > 0 else {
+                Automation.mark("audio: invalid input format \(nodeFormat); recovering")
+                scheduleStartRetry(reason: "invalid input format")
+                return
+            }
+            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, time in
+                self?.fanOut(buffer, at: time)
+            }
+        } else {
+            engine.connect(playbackPlayer, to: playbackMixer, format: nil)
+            engine.connect(playbackMixer, to: engine.mainMixerNode, format: nil)
         }
         engine.prepare()
         do {
@@ -407,7 +418,7 @@ final class AudioIO: AudioSource, AudioSink {
         isPlaying = false
         resumePendingPlays()
         if engine.isRunning { engine.stop() }
-        engine.inputNode.removeTap(onBus: 0)
+        if profile != .listen { engine.inputNode.removeTap(onBus: 0) }
         running = false
     }
 
@@ -432,6 +443,9 @@ final class AudioIO: AudioSource, AudioSink {
             try? session.setCategory(
                 .playAndRecord, mode: .default,
                 options: [.defaultToSpeaker])
+        case .listen:
+            // A station is playback: no record category, no mic indicator.
+            try? session.setCategory(.playback, mode: .default, options: [])
         }
         do {
             try session.setActive(true, options: .notifyOthersOnDeactivation)
