@@ -29,6 +29,23 @@ final class BubbleReplay {
     /// time: leaving the chat stops the replay first).
     var onChange: (() -> Void)?
 
+    /// The replay voice (a Phonon voice name) — picked from the bubble menu,
+    /// which is also the explicit opt-in for replaying the user's own turns
+    /// in a cloned voice when no original audio is stored (#202 P3). nil =
+    /// the contact's configured voice (caller turns then say "no stored
+    /// audio" instead of substituting). Local only: the voice file plays on
+    /// device; no audio is sent anywhere for replay.
+    var voice: String? {
+        get { UserDefaults.standard.string(forKey: "idfon.replay.voice") }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: "idfon.replay.voice")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "idfon.replay.voice")
+            }
+        }
+    }
+
     private var engine: TtsEngine?
     private var player: AVAudioPlayer?
     private let playerDone = ReplayPlayerDone()
@@ -52,7 +69,8 @@ final class BubbleReplay {
              turnID: String, ticket: String?, mode: Mode = .auto) -> BubbleTap.Action {
         let action = BubbleTap.action(role: role, text: text, final: final,
                                       callActive: callActive, reading: readingID == messageID,
-                                      audioAvailable: hasAudio(turnID: turnID, ticket: ticket))
+                                      audioAvailable: hasAudio(turnID: turnID, ticket: ticket),
+                                      cloneVoiceAvailable: voice != nil)
         switch action {
         case .play:
             play(messageID: messageID, role: role, text: text, peerID: peerID,
@@ -103,6 +121,15 @@ final class BubbleReplay {
         if mode == .exact {
             CallFeedback.post("No stored audio for this turn")
             return
+        }
+        // #202 P3: a caller turn with no original plays in the configured
+        // replay voice (the user's clone) — and says so, never silently.
+        if role != "agent" {
+            guard voice != nil else {
+                CallFeedback.post("No stored audio for this turn")
+                return
+            }
+            CallFeedback.post("Cloned voice — not the original audio")
         }
         playSynth(messageID: messageID, text: text, peerID: peerID)
     }
@@ -162,6 +189,7 @@ final class BubbleReplay {
     private func playSynth(messageID: String, text: String, peerID: String) {
         let pick = ContactOnDeviceEngines.tts(for: peerID).flatMap(TtsBackend.init(rawValue:))
         let engine = SpeechEngines.makeTts(pick ?? SpeechEngines.backend)
+        engine.voice = voice
         self.engine = engine
         readingID = messageID
         onChange?()

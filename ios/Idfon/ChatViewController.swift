@@ -1478,25 +1478,55 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if case .notice(let text) = action { CallFeedback.post(text) }
     }
 
-    /// #202 long-press: exact vs re-synthesized playback, offered only where
-    /// the two really differ (an agent turn with stored exact audio). The
-    /// "voice" option joins with P3 (cloned voices).
+    /// #202 long-press options: exact vs re-synthesized playback, and the
+    /// replay voice (the P3 opt-in: a caller turn with no stored original
+    /// replays in this voice — the user's clone — and says so).
     @objc private func bubbleLongPressed(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         let point = gesture.location(in: tableView)
         guard let indexPath = tableView.indexPathForRow(at: point),
               case .message(let message) = timelineItems[indexPath.row],
               case .callTranscript(let transcript) = message.kind,
-              transcript.role == "agent",
-              BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket)
+              transcript.final, !transcript.text.isEmpty
         else { return }
+        let hasAudio = BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket)
         let sheet = UIAlertController(title: "Replay this turn", message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Play Original Audio", style: .default) { [weak self] _ in
-            self?.replayTapped(message: message, transcript: transcript, mode: .exact)
+        if hasAudio {
+            sheet.addAction(UIAlertAction(title: "Play Original Audio", style: .default) { [weak self] _ in
+                self?.replayTapped(message: message, transcript: transcript, mode: .exact)
+            })
+        }
+        if transcript.role == "agent" || BubbleReplay.shared.voice != nil {
+            sheet.addAction(UIAlertAction(title: "Play Re-synthesized", style: .default) { [weak self] _ in
+                self?.replayTapped(message: message, transcript: transcript, mode: .synth)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Replay Voice…", style: .default) { [weak self] _ in
+            self?.presentVoicePicker(message: message, transcript: transcript, from: point)
         })
-        sheet.addAction(UIAlertAction(title: "Play Re-synthesized", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = tableView
+        sheet.popoverPresentationController?.sourceRect = CGRect(origin: point, size: .zero)
+        present(sheet, animated: true)
+    }
+
+    /// #202 P3: pick the replay voice — the explicit opt-in for cloned-voice
+    /// replay of the user's own turns, and the voice for re-synthesis.
+    private func presentVoicePicker(message: ChatMessage, transcript: CallTranscript, from point: CGPoint) {
+        let sheet = UIAlertController(
+            title: "Replay Voice",
+            message: "A clone voice replays your own turns when no original is stored. Use only a voice made from your own voice or one you have consent to use — it plays on device.",
+            preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Contact's Voice (default)", style: .default) { [weak self] _ in
+            BubbleReplay.shared.voice = nil
             self?.replayTapped(message: message, transcript: transcript, mode: .synth)
         })
+        for name in PhononVoices.names() {
+            sheet.addAction(UIAlertAction(title: name, style: .default) { [weak self] _ in
+                BubbleReplay.shared.voice = name
+                self?.replayTapped(message: message, transcript: transcript, mode: .synth)
+            })
+        }
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         sheet.popoverPresentationController?.sourceView = tableView
         sheet.popoverPresentationController?.sourceRect = CGRect(origin: point, size: .zero)

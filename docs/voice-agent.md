@@ -201,8 +201,14 @@ and re-sends the final under the same `turn_id` with the ticket) — and the app
 captures per-turn audio locally (`TurnReplay` on the AudioIO seam: the speak
 window for agent turns, the mic utterance for caller turns) into
 `Library/Caches/idfon-turn-replay` (cache-class, budget eviction). A caller
-bubble with no stored audio says so — a cloned-voice substitution is P3,
-explicit opt-in only.
+bubble with no stored audio says so — unless the user picked a **replay
+voice** (the bubble menu's "Replay Voice", #202 P3): the explicit opt-in that
+replays their own turns in a cloned voice, honestly captioned, always local.
+A Phonon voice is a 256 KB processed clip (`speaker_wavs`/`emb` latents): a
+clone is made offline from a consenting speaker's ~10 s recording (xn-ptts
+`scripts/clone-voice.py`, Gradium) and dropped into the pack's `voices/` dir.
+Voice creation may use the network (the Gradium API); replay and cloning
+substitution never send audio anywhere.
 
 ## Where the voice-I/O optimizations live (2026-11-07 ruling)
 

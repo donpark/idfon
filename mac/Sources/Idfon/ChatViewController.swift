@@ -1677,30 +1677,50 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         replay(messageID: sender.identifier?.rawValue, mode: .auto)
     }
 
-    /// #202 right-click: exact vs re-synthesized playback, offered only where
-    /// the two really differ (an agent turn with stored exact audio). The
-    /// "voice" option joins with P3 (cloned voices).
+    /// #202 right-click options: exact vs re-synthesized playback, and the
+    /// replay voice (the P3 opt-in: a caller turn with no stored original
+    /// replays in this voice — the user's clone — and says so).
     @objc private func replayMenuTapped(_ gesture: NSClickGestureRecognizer) {
         guard let messageId = gesture.view?.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
               case .callTranscript(let transcript) = message.kind,
-              transcript.role == "agent",
-              BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket),
+              transcript.final, !transcript.text.isEmpty,
               let view = gesture.view
         else { return }
+        let hasAudio = BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket)
         let menu = NSMenu()
-        for (title, mode) in [("Play Original Audio", BubbleReplay.Mode.exact),
-                              ("Play Re-synthesized", BubbleReplay.Mode.synth)] {
-            let item = NSMenuItem(title: title, action: #selector(replayModeTapped(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = [messageId, mode == .exact ? "exact" : "synth"]
-            menu.addItem(item)
+        if hasAudio {
+            menu.addItem(replayItem("Play Original Audio", "exact", messageId))
         }
+        if transcript.role == "agent" || BubbleReplay.shared.voice != nil {
+            menu.addItem(replayItem("Play Re-synthesized", "synth", messageId))
+        }
+        let voiceMenu = NSMenu()
+        voiceMenu.addItem(replayItem("Contact's Voice (default)", "voice-clear", messageId))
+        for name in PhononVoices.names() {
+            voiceMenu.addItem(replayItem(name, "voice:\(name)", messageId))
+        }
+        let voiceRoot = NSMenuItem(title: "Replay Voice", action: nil, keyEquivalent: "")
+        voiceRoot.submenu = voiceMenu
+        voiceRoot.toolTip = "A clone voice replays your own turns when no original is stored. Use only a voice made from your own voice or one you have consent to use — it plays on device."
+        menu.addItem(voiceRoot)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height), in: view)
+    }
+
+    private func replayItem(_ title: String, _ pick: String, _ messageID: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(replayModeTapped(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = [messageID, pick]
+        return item
     }
 
     @objc private func replayModeTapped(_ sender: NSMenuItem) {
         guard let pick = sender.representedObject as? [String], pick.count == 2 else { return }
+        if pick[1] == "voice-clear" {
+            BubbleReplay.shared.voice = nil
+        } else if pick[1].hasPrefix("voice:") {
+            BubbleReplay.shared.voice = String(pick[1].dropFirst("voice:".count))
+        }
         replay(messageID: pick[0], mode: pick[1] == "exact" ? .exact : .synth)
     }
 

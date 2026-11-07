@@ -21,6 +21,10 @@ protocol TtsEngine: AnyObject {
     var name: String { get }
     /// Wall time of the last `speak`, in ms (nil when not measured).
     var lastLatencyMs: Int? { get }
+    /// Voice override for synthesis (a Phonon voice name — a custom voice is
+    /// a 256 KB processed clip, `PhononVoices`). nil = the engine default.
+    /// Apple TTS ignores it.
+    var voice: String? { get set }
     /// Download/load models if needed (no-op for Apple).
     func prepare() async
     /// Speak `text`, returning when playback finishes.
@@ -34,6 +38,7 @@ protocol TtsEngine: AnyObject {
 
 extension TtsEngine {
     var lastLatencyMs: Int? { nil }
+    var voice: String? { get { nil } set {} }
     var playedSeconds: TimeInterval { 0 }
 }
 
@@ -58,6 +63,22 @@ enum TtsBackend: String, CaseIterable {
         #else
         return self != .phonon
         #endif
+    }
+}
+
+/// Replay voice catalog (#202 P3): a Phonon voice is a 256 KB processed clip
+/// (`speaker_wavs`/`emb` latents) — a clone made offline from a consenting
+/// speaker's ~10 s recording (xn-ptts `scripts/clone-voice.py`), dropped into
+/// the pack's `voices/` dir, plays locally with no network.
+enum PhononVoices {
+    /// Voice names installed with the pack (custom clones included). An empty
+    /// list just hides the picker.
+    static func names() -> [String] {
+        let dir = ModelStore.root.appendingPathComponent("phonon").appendingPathComponent("voices")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return files.filter { $0.hasSuffix(".safetensors") }
+            .map { String($0.dropLast(".safetensors".count)) }
+            .sorted()
     }
 }
 
@@ -327,6 +348,8 @@ final class PhononTtsEngine: NSObject, TtsEngine {
     private var tracker: StreamTracker?
     /// Set by `stop()` so a cancel during synthesis does not start playback.
     private var stopRequested = false
+    /// Replay voice override (#202 P3); nil = `IDFON_TTS_VOICE` or Clara.
+    var voice: String?
     private(set) var lastLatencyMs: Int?
 
     func prepare() async {
@@ -367,6 +390,14 @@ final class PhononTtsEngine: NSObject, TtsEngine {
             Automation.mark("voice: phonon unavailable, using apple")
             await fallback.speak(text)
             return
+        }
+        // The warm Phonon is shared across engine instances: enforce this
+        // engine's voice on every speak so a replay voice cannot leak into a
+        // call, or the call's into a replay.
+        let desired = voice ?? Self.env("IDFON_TTS_VOICE") ?? "Clara"
+        if phonon.voice != desired {
+            do { try await phonon.setVoice(desired) }
+            catch { Automation.mark("voice: phonon voice '\(desired)' failed: \(error.localizedDescription)") }
         }
         let start = Date()
         let tracker = StreamTracker()

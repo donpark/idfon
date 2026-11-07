@@ -5,9 +5,10 @@ import Foundation
 /// `swiftc -o /tmp/bubbletapcheck <app>/BubbleTap.swift
 /// <app>/Checks/BubbleTapCheck/main.swift && /tmp/bubbletapcheck`).
 ///
-/// A caller turn never gets a silent re-synthesis: its own audio is P2 and a
-/// cloned voice is P3 (explicit opt-in), so without stored audio P0/P1 say so
-/// instead. An agent turn falls back to re-synthesis when none is stored.
+/// A caller turn never gets a silent substitution: its own audio is P2 and a
+/// cloned voice is P3 (explicit opt-in — a configured replay voice), so
+/// without stored audio and without that opt-in it says so. An agent turn
+/// falls back to re-synthesis when nothing is stored.
 enum BubbleTap {
     enum Action: Equatable {
         case play
@@ -19,14 +20,17 @@ enum BubbleTap {
     /// always stops, even mid-call. `callActive` is any live call, dial, or
     /// watched stream (`LiveCall.shared.state != .idle`). `audioAvailable`
     /// means the turn's exact audio exists (captured locally or ticketed by
-    /// the holder).
+    /// the holder); `cloneVoiceAvailable` is the P3 opt-in (a configured
+    /// replay voice).
     static func action(role: String, text: String, final: Bool, callActive: Bool,
-                       reading: Bool, audioAvailable: Bool) -> Action {
+                       reading: Bool, audioAvailable: Bool, cloneVoiceAvailable: Bool) -> Action {
         if reading { return .stop }
         if callActive { return .notice("Replay is off during a call") }
         if text.isEmpty || text.allSatisfy({ $0.isWhitespace }) { return .notice("Nothing to read") }
         if !final { return .notice("This turn is still speaking") }
-        if role != "agent" && !audioAvailable { return .notice("No stored audio for this turn") }
+        if role != "agent" && !audioAvailable && !cloneVoiceAvailable {
+            return .notice("No stored audio for this turn")
+        }
         return .play
     }
 }
