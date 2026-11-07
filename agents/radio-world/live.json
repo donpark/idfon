@@ -4,5 +4,6 @@
   "log": "/tmp/idfon-radio-world-soak.jsonl",
   "broadcast": "idfon-radio",
   "voice_route": { "mode": "broadcast", "audio": "pcm24k" },
-  "opml": "shows.opml"
+  "opml": "shows.opml",
+  "default": "France/RMC FR"
 }

@@ -81,10 +81,16 @@ enum VoiceCatalog {
 /// holder path (`/menu.opml`) or an http(s) URL. Fetched and cached like the
 /// catalog; nil when the contact advertises none (older agent, unreachable),
 /// and the call then dials without a selection.
-enum ContactMenus {
-    private static var cache: [String: MenuDocument?] = [:]
+struct ContactMenu {
+    let entries: [MenuEntry]
+    /// The show the contact chose to play on open; nil = show the menu only.
+    let defaultShow: String?
+}
 
-    static func menu(for peerID: String, client: IdfonClient) async -> MenuDocument? {
+enum ContactMenus {
+    private static var cache: [String: ContactMenu?] = [:]
+
+    static func menu(for peerID: String, client: IdfonClient) async -> ContactMenu? {
         if let cached = cache[peerID] { return cached }
         let data = await withTaskGroup(of: Data?.self) { group in
             group.addTask { try? await client.fetchRemoteResource(account: peerID, path: "/idfon.json") }
@@ -104,10 +110,18 @@ enum ContactMenus {
             cache[peerID] = .some(nil)
             return nil
         }
-        let document = await fetchOPML(ref, peerID: peerID, client: client)
-            .flatMap(MenuDocument.parse)
-        cache[peerID] = .some(document)
-        return document
+        guard let document = await fetchOPML(ref, peerID: peerID, client: client)
+            .flatMap(MenuDocument.parse), !document.entries.isEmpty else {
+            cache[peerID] = .some(nil)
+            return nil
+        }
+        let rawDefault = (root["default"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let surface = ContactMenu(
+            entries: document.entries,
+            defaultShow: rawDefault?.isEmpty == false ? rawDefault : nil)
+        cache[peerID] = .some(surface)
+        return surface
     }
 
     /// A leading slash is a resource on the contact's own holder; anything

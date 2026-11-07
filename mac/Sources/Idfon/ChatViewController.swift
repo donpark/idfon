@@ -1386,6 +1386,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             self.live.hangUp()
             self.live.dial(peerID, show: show)
         })
+        // The contact's intro may choose the first stream; the menu stays up.
+        if let show = menu.defaultShow, !show.isEmpty, case .idle = live.state {
+            live.dial(peerID, show: show)
+        }
         return true
     }
 

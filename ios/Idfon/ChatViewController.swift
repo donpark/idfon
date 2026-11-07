@@ -455,7 +455,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// A menu contact's station list is opened over this chat; this item is the
     /// visible way back to it after the chat is uncovered (docs/live-radio.md).
     private var stationMenuItem: UIBarButtonItem?
-    private var stationMenuEntries: [MenuEntry]?
+    private var stationSurface: ContactMenu?
     /// The call-state nav item (idle call → calling → hang-up). Disabled —
     /// never hidden — while a call isn't available (an incoming ring, where
     /// the Bar shows Answer/Decline, or another peer's call owns the chrome).
@@ -693,7 +693,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// reference so "where did that screen go?" has an answer without leaving
     /// and re-entering the contact.
     private func installStationMenuItem() {
-        guard stationMenuItem == nil, let entries = stationMenuEntries, !entries.isEmpty else { return }
+        guard stationMenuItem == nil, let entries = stationSurface?.entries, !entries.isEmpty else { return }
         let item = UIBarButtonItem(title: "Stations", style: .plain,
                                    target: self, action: #selector(stationsTapped))
         item.accessibilityHint = "Opens the station list"
@@ -702,7 +702,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func stationsTapped() {
-        guard let entries = stationMenuEntries else { return }
+        guard let entries = stationSurface?.entries else { return }
         pushStationMenu(entries)
     }
 
@@ -1736,19 +1736,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// contact advertises no menu.
     @discardableResult
     private func presentStationMenuIfAny() async -> Bool {
-        guard let entries = await stationMenu(), !entries.isEmpty else { return false }
+        guard let surface = await stationMenu(), !surface.entries.isEmpty else { return false }
         installStationMenuItem()
-        pushStationMenu(entries)
+        pushStationMenu(surface.entries)
+        // The contact's intro may choose the first stream; the menu stays up,
+        // so the caller can still switch. Without one, the menu waits.
+        if let show = surface.defaultShow, !show.isEmpty, case .idle = LiveCall.shared.state {
+            LiveCall.shared.dial(peer.id, show: show)
+        }
         return true
     }
 
     /// Cached after the first fetch so the chat's Stations item reopens the
     /// list without another manifest/OPML round trip.
-    private func stationMenu() async -> [MenuEntry]? {
-        if let entries = stationMenuEntries { return entries }
+    private func stationMenu() async -> ContactMenu? {
+        if let surface = stationSurface { return surface }
         guard let menu = await ContactMenus.menu(for: peer.id, client: client) else { return nil }
-        stationMenuEntries = menu.entries
-        return menu.entries
+        stationSurface = menu
+        return menu
     }
 
     /// One station list per chat at a time: the auto-push and an instant call

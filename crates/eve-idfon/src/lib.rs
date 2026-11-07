@@ -637,6 +637,25 @@ pub fn idfon_manifest(params: &serde_json::Value, engine: &[serde_json::Value]) 
         {
             object.insert("menu".into(), serde_json::json!({ "opml": "/menu.opml" }));
         }
+        // The contact's intro: what it is and what the caller should do on open.
+        // `default` is a menu path the contact chose; absent = show the menu and
+        // wait for a pick.
+        let menu = object.contains_key("menu");
+        object
+            .entry("kind")
+            .or_insert_with(|| serde_json::Value::from(if menu { "menu" } else { "station" }));
+        if menu {
+            if let Some(default) = params
+                .get("default")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                object
+                    .entry("default")
+                    .or_insert_with(|| serde_json::Value::from(default));
+            }
+        }
     }
     manifest
 }
@@ -2652,9 +2671,22 @@ mod tests {
         // A menu contact (`opml` in the live config): the OPML is advertised.
         let manifest = idfon_manifest(&serde_json::json!({ "opml": "/x/shows.opml" }), &[]);
         assert_eq!(manifest["menu"]["opml"], "/menu.opml");
+        assert_eq!(manifest["kind"], "menu");
+        // The contact-chosen default rides the intro; only a menu has one.
+        let manifest = idfon_manifest(
+            &serde_json::json!({ "opml": "/x/shows.opml", "default": "News/Morning" }),
+            &[],
+        );
+        assert_eq!(manifest["default"], "News/Morning");
+        let station = idfon_manifest(
+            &serde_json::json!({ "default": "News/Morning" }),
+            &[],
+        );
+        assert!(station.get("default").is_none());
         // No menu config: nothing advertised.
         let manifest = idfon_manifest(&serde_json::json!({}), &[]);
         assert!(manifest.get("menu").is_none());
+        assert_eq!(manifest["kind"], "station");
         // An agent-supplied `menu` block wins over the derived one.
         let manifest = idfon_manifest(
             &serde_json::json!({

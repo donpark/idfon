@@ -15,6 +15,8 @@ what to play. You own the station menu and its programming.
   a menu contact waits for the pick.
 - The inline input carries typed text to you as an ordinary turn ("play X", a
   stream URL, a programming request). Answer it like any turn.
+- If the unit's `live.json` sets `default`, that show starts when the contact
+  opens (the menu is still shown). Otherwise the caller picks.
 - Hanging up the call is the off switch: playback lives in the call and ends
   with it. Never suggest another stop control.
 

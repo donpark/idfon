@@ -93,6 +93,17 @@ a whole agent unit — see **The radio-world agent** below.
   `--tag`/`--country` are optional for a broad search, and `--append <menu>`
   adds matches under a deduped `Found` section. Candidate probes run in
   parallel, so a dead station cannot stall a chat turn.
+- **Opening a contact is an intro, not a call.** The app fetches the contact's
+  `idfon.json` self-description first: `kind` (`station` or `menu`), the
+  `menu.opml` reference, an optional `default` menu path, and the voice route.
+  A `station` auto-plays. A `menu` shows the outline and, when the contact set
+  `default`, also starts that show with the menu still visible; without one it
+  waits for a pick. The client's own metadata (identity, audio profile, the
+  selected `show`) rides the live invite that follows, so there is no separate
+  hello round trip.
+- `default` is the **contact's** choice, not the caller's: set it in the unit's
+  `live.json` (`agents/radio-world/live.json`, e.g. `"default": "France/RMC
+  FR"`); it is a menu path resolved exactly like `show=`.
 - The holder exposes the OPML as a resource — `idfon://<holder>/menu.opml`,
   advertised as `menu.opml` in the `idfon.json` manifest (an agent-supplied
   `menu` block wins) — fetched by the apps like the voice catalog. A manifest
