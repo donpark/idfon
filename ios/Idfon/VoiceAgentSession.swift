@@ -98,6 +98,8 @@ final class VoiceAgentSession: NSObject {
     private var lastFeedbackAt: Date?
     /// In-flight feedback utterance; drained before a reply speaks.
     private var feedbackTask: Task<Void, Never>?
+    /// #202: the turn id whose speak window is captured for exact replay.
+    private var agentTurnKey: String?
     /// The filler cover over reply latency (tool lead-ins / still-looking
     /// lines); cancelled the moment the reply arrives.
     private var fillerTask: Task<Void, Never>?
@@ -300,7 +302,9 @@ final class VoiceAgentSession: NSObject {
             }
             if let greeting, !greeting.spoken.isEmpty, !stopRequested {
                 setState(.speaking(greeting.spoken))
+                agentTurnKey = "\(callId)-greet" // #202 P1: the greet bubble's exact audio
                 _ = await speak(greeting.spoken)
+                agentTurnKey = nil
                 updateStats()
             }
             while !stopRequested && turnsDone < turnLimit {
@@ -356,14 +360,18 @@ final class VoiceAgentSession: NSObject {
     /// partials ("speaking…"), then again when the turn commits with the final,
     /// possibly corrected, text.
     private func recordCallerTurn(peerId: String, text: String, final: Bool) {
+        let turnId = "\(callId)-\(turnsDone)-user"
         ChatStore.shared.recordSpokenTurn(
-            peerId: peerId, callId: callId, turnId: "\(callId)-\(turnsDone)-user",
+            peerId: peerId, callId: callId, turnId: turnId,
             role: "caller", text: text, final: final
         )
+        // #202 P2: bind the mic utterance that just ended to this turn.
+        if final { TurnReplay.shared.commitCaller(turnKey: turnId) }
     }
 
     /// Drop the live caller bubble for a turn that produced nothing to send.
     private func dropCallerTurn(peerId: String) {
+        TurnReplay.shared.discard(turnKey: "\(callId)-\(turnsDone)-user")
         ChatStore.shared.removeSpokenTurn(peerId: peerId, turnId: "\(callId)-\(turnsDone)-user")
     }
 
@@ -462,13 +470,17 @@ final class VoiceAgentSession: NSObject {
         setState(.thinking)
         let replyStart = Date()
         startFillerCover(transcript: heard)
+        // #202 P1: streamed chunks and the tail share one replay key.
+        let spokenTurnId = "\(callId)-\(turnsDone)-agent"
+        agentTurnKey = spokenTurnId
         guard let result = await reply(
             peerId: peerId, text: heard, logPrefix: "voice-agent",
-            spokenTurnId: "\(callId)-\(turnsDone)-agent"
+            spokenTurnId: spokenTurnId
         )
         else {
             awaitingReply = false
             await cancelFiller()
+            agentTurnKey = nil
             // A missing reply must not kill the call; try the next turn.
             Automation.mark("voice-agent: no reply, continuing")
             return true
@@ -491,6 +503,7 @@ final class VoiceAgentSession: NSObject {
             }
             speakMs = Int(Date().timeIntervalSince(speakStart) * 1000)
         }
+        agentTurnKey = nil
         // Turn-stage timings for the latency report (docs/benchmarks.md):
         // asr_gap_ms = turn-detection wait, reply_ms = network + agent turn,
         // speak_ms = TTS + playback (includes speak()'s post-roll hold).
@@ -622,6 +635,7 @@ final class VoiceAgentSession: NSObject {
         stopRequested = true
         DirectorRuntime.shared.endCall()
         segmenter.stop()
+        TurnReplay.shared.disarmCall()
         turnShadow?.stop()
         turnShadow = nil
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
@@ -702,6 +716,8 @@ final class VoiceAgentSession: NSObject {
         // starts capture/playback; this class only re-asserts the caller's
         // speaker preference after route changes.
         AudioIO.shared.start(profile: .voiceAgent)
+        // #202 P2: the mic utterance splitter runs for the whole call.
+        TurnReplay.shared.armCall()
         // Shadow turn-taker: load the models off the main path; TurnShadow then
         // feeds itself from the capture observer.
         if turnShadow == nil {
@@ -1081,6 +1097,8 @@ final class VoiceAgentSession: NSObject {
     private func beginSpeech() {
         guard !speechActive else { return }
         speechActive = true
+        // #202 P1: window the exact-audio capture to this turn's speak.
+        if let agentTurnKey { TurnReplay.shared.openAgent(turnKey: agentTurnKey) }
         // Arm barge-in: keep the recognizer live while TTS plays. AEC keeps the
         // agent's own voice out, so a cancellable non-echo utterance is the
         // caller interrupting.
@@ -1099,6 +1117,7 @@ final class VoiceAgentSession: NSObject {
     private func endSpeech() -> String? {
         guard speechActive else { return nil }
         speechActive = false
+        if let agentTurnKey { TurnReplay.shared.closeAgent(turnKey: agentTurnKey) }
         var interrupted: String?
         if speechArmed {
             speechArmed = false

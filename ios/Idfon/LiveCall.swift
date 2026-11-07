@@ -732,6 +732,9 @@ final class HybridVoice {
     /// (`docs/voice-agent-loop-contract.md` §2), plus the serial speak chain.
     private var feeders: [String: ChunkFeeder] = [:]
     private var speakChain: Task<Void, Never>?
+    /// #202 P1: queued chunk count per turn, so the replay window spans the
+    /// turn's chunks first to last.
+    private var pendingChunks: [String: Int] = [:]
 
     func start(peerRef: String, route: VoiceRoute) {
         Automation.mark("hybrid: start ref=\(peerRef)")
@@ -765,7 +768,7 @@ final class HybridVoice {
     func maybeSpeak(peerId: String, turnId: String, role: String, text: String) {
         guard isActive, speakLocal, role == "agent", !text.isEmpty else { return }
         var feeder = feeders.removeValue(forKey: turnId) ?? ChunkFeeder()
-        for chunk in feeder.finish(text) { speakQueued(chunk) }
+        for chunk in feeder.finish(text) { speakQueued(chunk, turn: turnId) }
     }
 
     /// Speech-unit `partial` (loop contract §2): the cumulative snapshot of
@@ -776,16 +779,24 @@ final class HybridVoice {
         var feeder = feeders[turnId] ?? ChunkFeeder()
         let chunks = feeder.feed(text)
         feeders[turnId] = feeder
-        for chunk in chunks { speakQueued(chunk) }
+        for chunk in chunks { speakQueued(chunk, turn: turnId) }
     }
 
     /// One utterance at a time through the mouth (each engine is
-    /// single-utterance), chained in arrival order.
-    private func speakQueued(_ text: String) {
+    /// single-utterance), chained in arrival order. #202 P1: the turn's
+    /// chunks are its bubble's exact audio — the replay window runs from the
+    /// first chunk to the last (the chain serializes turns).
+    private func speakQueued(_ text: String, turn: String) {
         let prior = speakChain
+        let queued = (pendingChunks[turn] ?? 0) + 1
+        pendingChunks[turn] = queued
         speakChain = Task { @MainActor in
             await prior?.value
+            TurnReplay.shared.openAgent(turnKey: turn)
             await self.tts.speak(text)
+            let left = (self.pendingChunks[turn] ?? 1) - 1
+            self.pendingChunks[turn] = left <= 0 ? nil : left
+            if left <= 0 { TurnReplay.shared.closeAgent(turnKey: turn) }
         }
     }
 

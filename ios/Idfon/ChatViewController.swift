@@ -781,6 +781,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
+        // #202: long-press a spoken bubble for exact-vs-re-synth options.
+        tableView.addGestureRecognizer(
+            UILongPressGestureRecognizer(target: self, action: #selector(bubbleLongPressed(_:))))
         tableView.register(MessageCell.self, forCellReuseIdentifier: "message")
         tableView.register(TimelineCardCell.self, forCellReuseIdentifier: "card")
         tableView.register(ImageCell.self, forCellReuseIdentifier: "image")
@@ -1462,14 +1465,42 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
     }
 
-    /// #202 P0: tap a spoken bubble to hear it re-synthesized in the contact's
-    /// on-device voice; tap again to stop. Notices ride the call-status line.
-    private func replayTapped(message: ChatMessage, transcript: CallTranscript) {
+    /// #202 P0: tap a spoken bubble to hear it — its exact audio when one is
+    /// stored (P1/P2), else re-synthesized in the contact's on-device voice.
+    /// Tap again to stop. Notices ride the call-status line.
+    private func replayTapped(message: ChatMessage, transcript: CallTranscript,
+                              mode: BubbleReplay.Mode = .auto) {
         let action = BubbleReplay.shared.tap(
             messageID: message.id, role: transcript.role, text: transcript.text,
             final: transcript.final, peerID: message.peerId,
-            callActive: LiveCall.shared.state != .idle)
+            callActive: LiveCall.shared.state != .idle,
+            turnID: transcript.turnId, ticket: transcript.audioTicket, mode: mode)
         if case .notice(let text) = action { CallFeedback.post(text) }
+    }
+
+    /// #202 long-press: exact vs re-synthesized playback, offered only where
+    /// the two really differ (an agent turn with stored exact audio). The
+    /// "voice" option joins with P3 (cloned voices).
+    @objc private func bubbleLongPressed(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        let point = gesture.location(in: tableView)
+        guard let indexPath = tableView.indexPathForRow(at: point),
+              case .message(let message) = timelineItems[indexPath.row],
+              case .callTranscript(let transcript) = message.kind,
+              transcript.role == "agent",
+              BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket)
+        else { return }
+        let sheet = UIAlertController(title: "Replay this turn", message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Play Original Audio", style: .default) { [weak self] _ in
+            self?.replayTapped(message: message, transcript: transcript, mode: .exact)
+        })
+        sheet.addAction(UIAlertAction(title: "Play Re-synthesized", style: .default) { [weak self] _ in
+            self?.replayTapped(message: message, transcript: transcript, mode: .synth)
+        })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = tableView
+        sheet.popoverPresentationController?.sourceRect = CGRect(origin: point, size: .zero)
+        present(sheet, animated: true)
     }
 
     /// #202: reading state lands only on the rows that changed.

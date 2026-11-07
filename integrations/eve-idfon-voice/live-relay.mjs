@@ -119,6 +119,9 @@ async function forward(text) {
 }
 
 async function play(peerId, pcm) {
+  // #202 P1: the turn's exact replay audio is the chunks as posted (a barge
+  // keeps the played prefix). Only a reply turn collects (`doSpeak`).
+  if (captureSink) captureSink.push(Buffer.from(pcm));
   const response = await fetch(`${bridge}/live/audio`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
@@ -303,11 +306,13 @@ async function speakElevenLabs(cfg, text, peerId, signal) {
 
 /** Speak text on the call, streaming when the TTS provider supports it.
  * Serialized and generation-stamped: a barge invalidates queued speech. */
+// #202 P1: the chunk collector for the speaking reply turn (null otherwise).
+let captureSink = null;
 function speak(text, peerId, kind = "reply") {
   const generation = speechGeneration;
   const run = speechChain.then(async () => {
-    if (generation !== speechGeneration) return;
-    await doSpeak(text, peerId, kind);
+    if (generation !== speechGeneration) return [];
+    return await doSpeak(text, peerId, kind);
   });
   speechChain = run.catch(() => {});
   return run;
@@ -320,6 +325,9 @@ async function doSpeak(text, peerId, kind) {
   botSpeech.kind = kind;
   botSpeech.onsetMs = Date.now() - callStartedAt;
   bargePending = false;
+  // #202 P1: collect the chunks as posted — the turn's exact replay audio.
+  const capture = kind === "reply" ? [] : null;
+  captureSink = capture;
   try {
     const cfg = engine.tts || {};
     const spoken = spokenText(text);
@@ -343,11 +351,13 @@ async function doSpeak(text, peerId, kind) {
   } catch (error) {
     if (error?.name !== "AbortError") throw error;
   } finally {
+    captureSink = null;
     botSpeech.speaking = false;
     botSpeech.kind = null;
     botSpeech.stopMs = Date.now() - callStartedAt;
     if (botAbort === controller) botAbort = null;
   }
+  return capture ?? [];
 }
 
 /** A floor take while the agent speaks: stop the TTS, drop the turn's reply
@@ -391,9 +401,13 @@ let turnSeq = 0;
 // CallRecorder, one JSONL line at teardown. Fully passive.
 const callStartedAt = Date.now();
 const recorder = new CallRecorder(callId, new Date());
-async function sendTranscript(peerId, role, text, isFinal) {
-  const turnId = `${callId}-t${turnSeq++}`;
-  const body = JSON.stringify({ call_id: callId, turn_id: turnId, role, text, final: isFinal });
+/// `turnId`/`audioTicket` (#202 P1): a replay re-send reuses the turn's id
+/// and carries the ticket for that turn's exact TTS audio.
+async function sendTranscript(peerId, role, text, isFinal, turnId = `${callId}-t${turnSeq++}`, audioTicket = null) {
+  const body = JSON.stringify({
+    call_id: callId, turn_id: turnId, role, text, final: isFinal,
+    ...(audioTicket ? { audio_ticket: audioTicket } : {}),
+  });
   await fetch(`${bridge}/send`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
@@ -402,6 +416,29 @@ async function sendTranscript(peerId, role, text, isFinal) {
       text: `IDFON-CALL/1\n${body}`, await_reply: false,
     }),
   });
+}
+
+/// #202 P1: publish the turn's played TTS PCM as a wav blob; returns the
+/// ticket or null. Fail-open — a missing ticket only loses exact replay (the
+/// app re-synthesizes).
+async function publishTurnAudio(chunks) {
+  try {
+    if (!chunks || !chunks.length) return null;
+    const wav = wavWrap(Buffer.concat(chunks));
+    const response = await fetch(`${bridge}/blob/put`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
+      body: JSON.stringify({ bytes_base64: wav.toString("base64") }),
+    });
+    if (!response.ok) {
+      log.warn("turn audio put failed", { status: response.status });
+      return null;
+    }
+    return (await response.json()).ticket ?? null;
+  } catch (error) {
+    log.warn("turn audio publish failed", { error: String(error) });
+    return null;
+  }
 }
 
 // Energy endpointer (|s16| > 300, 800 ms quiet tail), mirroring idfon-voice.
@@ -583,9 +620,19 @@ async function handleTurn(speech, peerId, trace, turnEndMs) {
     }
     if (!reply) return;
     log.info("reply", { reply, peer_id: peerId, trace, reply_ms: replyMs });
-    sendTranscript(peerId, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
+    const spoken = spokenText(reply);
+    const turnId = `${callId}-t${turnSeq++}`;
+    sendTranscript(peerId, "agent", spoken, true, turnId).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const playStart = Date.now();
-    await speak(reply, peerId, "reply");
+    const played = await speak(reply, peerId, "reply");
+    // #202 P1: the turn's exact audio (what actually played, barge-trimmed):
+    // publish it and re-send the final with the ticket so the bubble replays
+    // it instead of re-synthesizing.
+    const ticket = await publishTurnAudio(played);
+    if (ticket) {
+      sendTranscript(peerId, "agent", spoken, true, turnId, ticket)
+        .catch((error) => log.warn("transcript send failed", { error: String(error) }));
+    }
     // Observation record: the agent turn is the delivery window (TTS + posting),
     // approximating when the caller hears the agent.
     recorder.addTurn({ text: spokenText(reply), role: "agent", started_ms: playStart - callStartedAt, duration_ms: Date.now() - playStart });

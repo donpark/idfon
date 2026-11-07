@@ -196,6 +196,10 @@ struct CallTranscript: Codable, Equatable {
     /// Speech-unit `kind` (e.g. "answer", "phatic"): a fact about the
     /// speech. History policy on the fact is the app's choice.
     var kind: String? = nil
+    /// Replay (#202): a blob ticket for this turn's exact audio (the holder's
+    /// per-turn TTS PCM), when it captured one. Absent = re-synthesize (agent)
+    /// or no original to replay (caller).
+    var audioTicket: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case callId = "call_id"
@@ -204,6 +208,7 @@ struct CallTranscript: Codable, Equatable {
         case final = "final"
         case playedS = "played_s"
         case kind
+        case audioTicket = "audio_ticket"
     }
 }
 

@@ -1094,8 +1094,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             // "You:" prefix.
             tv.textStorage?.setAttributedString(renderText("\(transcript.text)\(suffix)"))
             tv.translatesAutoresizingMaskIntoConstraints = false
-            // #202: Read/Stop replays the turn in the contact's on-device
-            // voice (a click gesture would fight the text view's selection).
+            // #202: Read/Stop replays the turn (exact audio when stored, else
+            // the contact's on-device voice; right-click for the mode menu — a
+            // click gesture would fight the text view's selection).
             let replay = NSButton(title: BubbleReplay.shared.isReading(message.id) ? "Stop" : "Read",
                                   target: self, action: #selector(replayTapped(_:)))
             replay.bezelStyle = .rounded
@@ -1103,6 +1104,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             replay.font = NSFont.systemFont(ofSize: 11)
             replay.identifier = NSUserInterfaceItemIdentifier(message.id)
             replay.translatesAutoresizingMaskIntoConstraints = false
+            let menuClick = NSClickGestureRecognizer(target: self, action: #selector(replayMenuTapped(_:)))
+            menuClick.buttonMask = 0x2 // right-click
+            replay.addGestureRecognizer(menuClick)
             for view in [tv, replay] { bubble.addSubview(view) }
             NSLayoutConstraint.activate([
                 tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
@@ -1666,16 +1670,49 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             }))
     }
 
-    /// #202 P0: Read hears the turn re-synthesized in the contact's on-device
-    /// voice; Stop (or another bubble's Read) ends it. Notices ride the banner.
+    /// #202 P0: Read hears the turn — its exact audio when stored (P1/P2),
+    /// else re-synthesized in the contact's on-device voice; Stop (or another
+    /// bubble's Read) ends it. Notices ride the banner.
     @objc private func replayTapped(_ sender: NSButton) {
-        guard let messageId = sender.identifier?.rawValue,
+        replay(messageID: sender.identifier?.rawValue, mode: .auto)
+    }
+
+    /// #202 right-click: exact vs re-synthesized playback, offered only where
+    /// the two really differ (an agent turn with stored exact audio). The
+    /// "voice" option joins with P3 (cloned voices).
+    @objc private func replayMenuTapped(_ gesture: NSClickGestureRecognizer) {
+        guard let messageId = gesture.view?.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .callTranscript(let transcript) = message.kind,
+              transcript.role == "agent",
+              BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket),
+              let view = gesture.view
+        else { return }
+        let menu = NSMenu()
+        for (title, mode) in [("Play Original Audio", BubbleReplay.Mode.exact),
+                              ("Play Re-synthesized", BubbleReplay.Mode.synth)] {
+            let item = NSMenuItem(title: title, action: #selector(replayModeTapped(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = [messageId, mode == .exact ? "exact" : "synth"]
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height), in: view)
+    }
+
+    @objc private func replayModeTapped(_ sender: NSMenuItem) {
+        guard let pick = sender.representedObject as? [String], pick.count == 2 else { return }
+        replay(messageID: pick[0], mode: pick[1] == "exact" ? .exact : .synth)
+    }
+
+    private func replay(messageID: String?, mode: BubbleReplay.Mode) {
+        guard let messageId = messageID,
               let message = history.first(where: { $0.id == messageId }),
               case .callTranscript(let transcript) = message.kind else { return }
         let action = BubbleReplay.shared.tap(
             messageID: message.id, role: transcript.role, text: transcript.text,
             final: transcript.final, peerID: message.peerId,
-            callActive: LiveCall.shared.state != .idle)
+            callActive: LiveCall.shared.state != .idle,
+            turnID: transcript.turnId, ticket: transcript.audioTicket, mode: mode)
         if case .notice(let text) = action { CallFeedback.post(text) }
     }
 
