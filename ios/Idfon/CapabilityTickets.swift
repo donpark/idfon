@@ -52,7 +52,15 @@ enum CapabilityTickets {
     static func rawTicket(for peer: String) -> String? { table()[peer] }
 
     private static func table() -> [String: String] {
-        UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+        let stored = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+        // The old public page embedded the ticket's JSON face. An unparsable
+        // entry is not a credential: drop it instead of sending it as a
+        // doomed ticket (re-adding from a current page stores the rcan token).
+        let valid = stored.filter { CapabilityTicketToken.parse($0.value) != nil }
+        if valid.count != stored.count {
+            UserDefaults.standard.set(valid, forKey: defaultsKey)
+        }
+        return valid
     }
 
     /// Voice routing the target's holder signed into its capability ticket, or

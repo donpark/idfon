@@ -61,7 +61,10 @@ self-service contact carries the holder's ticket in the same envelope, as the
 ```
 
 The app stores that token under the contact's peer id, so one add both makes
-the contact callable and carries its voice route. A protected contact's
+the contact callable and carries its voice route. A stored value that is not a
+parseable `rcan` token (for example the old page's JSON document) is ignored
+and removed on read, so it is never sent as a credential. A protected
+contact's
 envelope carries an `auth` block instead of a capability ticket:
 
 ```json
