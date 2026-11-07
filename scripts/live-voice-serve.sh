@@ -247,13 +247,28 @@ if [ "$(jq -r '.backend // empty' "$live_config_path" 2>/dev/null)" = "relay" ];
       stt: {provider: "deepgram", api_key_env: "DEEPGRAM_API_KEY"},
       tts: {provider: "elevenlabs", voice: "EXAVITQu4vr4xnSDxMaL", api_key_env: "ELEVENLABS_API_KEY"},
       wrap: {peer_id: $pid, endpoint_id: $pid, ticket: $ticket, local: true}}')
-    IDFON_BRIDGE_URL="$IDFON_BRIDGE_URL" IDFON_BRIDGE_SECRET="$IDFON_BRIDGE_SECRET" \
-    IDFON_VOICE_ENGINE="$engine" IDFON_VOICE_HOME="$home" \
-      nohup node "$root/integrations/eve-idfon-voice/live-relay.mjs" \
-        > "$home/live-relay.log" 2>&1 &
+    # The relay exits when the bridge's SSE stream terminates (a caller
+    # hangup used to kill it: `TypeError: terminated`, 2026-11-07), and an
+    # unsupervised exit leaves every later call silent. Restart it; the
+    # subshell's trap takes the child with it when the serve script stops.
+    (
+      child=""
+      stop() { [ -n "$child" ] && kill "$child" 2>/dev/null; exit 0; }
+      trap stop TERM INT
+      while :; do
+        IDFON_BRIDGE_URL="$IDFON_BRIDGE_URL" IDFON_BRIDGE_SECRET="$IDFON_BRIDGE_SECRET" \
+        IDFON_VOICE_ENGINE="$engine" IDFON_VOICE_HOME="$home" \
+          node "$root/integrations/eve-idfon-voice/live-relay.mjs" \
+            >> "$home/live-relay.log" 2>&1 &
+        child=$!
+        wait "$child" || true  # a killed child must not trip set -e and end the supervisor
+        echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"level\":\"warn\",\"service\":\"eve-idfon-voice\",\"target\":\"idfon.live-relay\",\"message\":\"relay exited; restarting\"}" >> "$home/live-relay.log"
+        sleep 1
+      done
+    ) &
     relay_pid=$!
     echo "$relay_pid" > "$home/live-relay.pid"
-    echo "companion: live-relay ($relay_pid, tyger endpointer, brain=self agent)"
+    echo "companion: live-relay ($relay_pid supervised, tyger endpointer, brain=self agent)"
   fi
 fi
 

@@ -221,7 +221,9 @@ const server = createServer(async (request, response) => {
     if (typeof body.peer_id !== "string" || typeof body.endpoint_id !== "string" ||
         typeof body.text !== "string" || !body.text ||
         (body.capability_ticket != null &&
-         (typeof body.capability_ticket !== "object" || Array.isArray(body.capability_ticket)))) {
+         (Array.isArray(body.capability_ticket) ||
+          (typeof body.capability_ticket !== "object" &&
+           typeof body.capability_ticket !== "string")))) {
       response.writeHead(400); response.end("invalid peer send\n"); return;
     }
     const requestId = `peer-${nextRequestId++}`;

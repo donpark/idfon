@@ -106,7 +106,10 @@ async function forward(text) {
     method: "POST",
     headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
     body: JSON.stringify({
-      peer_id: wrap.peer_id, endpoint_id: wrap.endpoint_id, capability_ticket: wrap.ticket,
+      peer_id: wrap.peer_id, endpoint_id: wrap.endpoint_id,
+      // A local wrap posts straight to this instance's agent: no holder ticket
+      // is involved, and the bridge rejects a ticket it cannot use.
+      ...(wrap.local === true ? {} : { capability_ticket: wrap.ticket }),
       text, a2a_depth: 1, await_reply: true, reply_to: replyTo, reply_timeout_ms: 60_000,
       local: wrap.local === true, // wrap = this instance's own agent: bridge routes locally
     }),
@@ -124,45 +127,240 @@ async function play(peerId, pcm) {
   if (!response.ok) throw new Error(`live audio HTTP ${response.status}`);
 }
 
-/** ElevenLabs chunked TTS: post each PCM chunk as it arrives. */
-async function speakElevenLabs(cfg, text, peerId) {
+/// A hard start or end of any generated utterance clicks. Fade the edge in
+/// place (10 ms); the whole-cue path fades both, the streamed path fades the
+/// first and last chunks.
+function fadeInEdge(pcm, ms = 10) {
+  const samples = Math.min(Math.floor(pcm.length / 2), Math.round((ms / 1000) * RATE));
+  for (let i = 0; i < samples; i += 1) {
+    pcm.writeInt16LE(Math.round(pcm.readInt16LE(i * 2) * (i / samples)), i * 2);
+  }
+}
+
+function fadeOutEdge(pcm, ms = 10) {
+  const samples = Math.min(Math.floor(pcm.length / 2), Math.round((ms / 1000) * RATE));
+  for (let i = 0; i < samples; i += 1) {
+    const tail = pcm.length - 2 * (i + 1);
+    pcm.writeInt16LE(Math.round(pcm.readInt16LE(tail) * (i / samples)), tail);
+  }
+}
+
+function fadeEdges(pcm, ms = 10) {
+  fadeInEdge(pcm, ms);
+  fadeOutEdge(pcm, ms);
+}
+
+const TARGET_RMS = 0.12; // ~-18.4 dBFS; same target for cues and replies
+const PREFIX_MS = 200;    // reply level estimate window
+
+function gainFor(pcm) {
+  const n = Math.floor(pcm.length / 2);
+  if (!n) return 1;
+  let sum = 0;
+  let peak = 0;
+  for (let i = 0; i < n; i += 1) {
+    const sample = pcm.readInt16LE(i * 2) / 32768;
+    sum += sample * sample;
+    const magnitude = Math.abs(sample);
+    if (magnitude > peak) peak = magnitude;
+  }
+  const rms = Math.sqrt(sum / n);
+  if (!rms) return 1;
+  let gain = TARGET_RMS / rms;
+  if (peak * gain > 0.95) gain = 0.95 / peak;
+  return Math.min(Math.max(gain, 0.25), 3);
+}
+
+function applyGain(pcm, gain) {
+  if (!gain || gain === 1) return;
+  for (let i = 0; i < pcm.length; i += 2) {
+    const scaled = Math.round(pcm.readInt16LE(i) * gain);
+    pcm.writeInt16LE(Math.max(-32768, Math.min(32767, scaled)), i);
+  }
+}
+
+function normalizePcm(pcm) {
+  applyGain(pcm, gainFor(pcm));
+}
+
+async function elevenLabsStream(cfg, text, signal) {
   const base = (cfg.base_url || "https://api.elevenlabs.io/v1").replace(/\/$/, "");
   const url = `${base}/text-to-speech/${cfg.voice}?output_format=pcm_${RATE}`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "xi-api-key": apiKey(cfg), "content-type": "application/json" },
-    body: JSON.stringify({ text, model_id: cfg.model || "eleven_turbo_v2_5" }),
+    body: JSON.stringify({
+      text,
+      model_id: cfg.model || "eleven_turbo_v2_5",
+      voice_settings: cfg.voice_settings ?? {
+        stability: 0.5,
+        similarity_boost: 0.75,
+        style: 0,
+        use_speaker_boost: true,
+      },
+    }),
+    signal,
   });
   if (!response.ok || !response.body) throw new Error(`tts HTTP ${response.status}: ${await response.text()}`);
-  const reader = response.body.getReader();
+  return response.body.getReader();
+}
+
+async function elevenLabsPcm(cfg, text, signal) {
+  const reader = await elevenLabsStream(cfg, text, signal);
+  const parts = [];
   let carry = Buffer.alloc(0);
   for (;;) {
+    if (signal?.aborted) return null;
     const { value, done } = await reader.read();
     if (done) break;
     carry = Buffer.concat([carry, Buffer.from(value)]);
     const usable = carry.length - (carry.length % 2);
     if (usable > 0) {
-      await play(peerId, carry.subarray(0, usable));
+      parts.push(Buffer.from(carry.subarray(0, usable)));
       carry = carry.subarray(usable);
     }
   }
+  return parts.length ? Buffer.concat(parts) : null;
 }
 
-/** Speak text on the call, streaming when the TTS provider supports it. */
-async function speak(text, peerId) {
+/// A short cue (greeting/filler/backchannel) is synthesized whole, normalized
+/// and edge-faded once; the result is cached for this voice/model.
+async function cuePcm(cfg, text, signal) {
+  const pcm = await elevenLabsPcm(cfg, text, signal);
+  if (!pcm) return null;
+  normalizePcm(pcm);
+  fadeEdges(pcm);
+  return pcm;
+}
+
+/// The long reply streams: pace chunks for barge cancellability, estimate the
+/// level from the first 200 ms and apply it to the whole utterance, fade the
+/// first and last chunk.
+async function speakElevenLabs(cfg, text, peerId, signal) {
+  const reader = await elevenLabsStream(cfg, text, signal);
+  let carry = Buffer.alloc(0);
+  let clock = 0;
+  let audioMs = 0;
+  let pending = null;
+  let first = true;
+  let gain = null;
+  const pre = [];
+  let preMs = 0;
+  const durationOf = (chunk) => (chunk.length / 2 / RATE) * 1000;
+  const post = async (chunk, final = false) => {
+    if (!chunk || signal.aborted) return;
+    applyGain(chunk, gain ?? 1);
+    if (first) { fadeInEdge(chunk); first = false; }
+    if (final) fadeOutEdge(chunk);
+    if (!clock) clock = Date.now();
+    const due = clock + audioMs;
+    audioMs += durationOf(chunk);
+    const wait = due - Date.now();
+    if (wait > 1) await new Promise((resolve) => setTimeout(resolve, wait));
+    if (signal.aborted) return;
+    await play(peerId, chunk);
+  };
+  const flushPre = async (final = false) => {
+    if (gain === null) {
+      const all = Buffer.concat(pre);
+      gain = all.length ? gainFor(all) : 1;
+    }
+    if (final) {
+      for (let i = 0; i < pre.length; i += 1) {
+        await post(pre[i], i === pre.length - 1);
+      }
+      pre.length = 0;
+      pending = null;
+      return;
+    }
+    const last = pre.pop();
+    for (const chunk of pre) await post(chunk);
+    pending = last ?? null;
+    pre.length = 0;
+  };
+  for (;;) {
+    if (signal.aborted) return;
+    const { value, done } = await reader.read();
+    if (done) break;
+    carry = Buffer.concat([carry, Buffer.from(value)]);
+    const usable = carry.length - (carry.length % 2);
+    if (usable > 0) {
+      const chunk = Buffer.from(carry.subarray(0, usable));
+      carry = carry.subarray(usable);
+      if (gain === null) {
+        pre.push(chunk);
+        preMs += durationOf(chunk);
+        if (preMs >= PREFIX_MS) await flushPre();
+      } else {
+        if (pending) await post(pending);
+        pending = chunk;
+      }
+    }
+  }
+  if (gain === null) await flushPre(true);
+  else if (pending) await post(pending, true);
+}
+
+/** Speak text on the call, streaming when the TTS provider supports it.
+ * Serialized and generation-stamped: a barge invalidates queued speech. */
+function speak(text, peerId, kind = "reply") {
+  const generation = speechGeneration;
+  const run = speechChain.then(async () => {
+    if (generation !== speechGeneration) return;
+    await doSpeak(text, peerId, kind);
+  });
+  speechChain = run.catch(() => {});
+  return run;
+}
+
+async function doSpeak(text, peerId, kind) {
+  const controller = new AbortController();
+  botAbort = controller;
   botSpeech.speaking = true;
+  botSpeech.kind = kind;
   botSpeech.onsetMs = Date.now() - callStartedAt;
+  bargePending = false;
   try {
     const cfg = engine.tts || {};
     const spoken = spokenText(text);
     if ((cfg.provider || "openai-compatible") === "elevenlabs") {
-      return await speakElevenLabs(cfg, spoken, peerId);
+      if (isCue(kind)) {
+        let pcm = cueCache.get(text);
+        if (!pcm) {
+          pcm = await cuePcm(cfg, spoken, controller.signal);
+          if (pcm) cueCache.set(text, pcm);
+        }
+        if (pcm && !controller.signal.aborted) await play(peerId, pcm);
+      } else {
+        await speakElevenLabs(cfg, spoken, peerId, controller.signal);
+      }
+    } else if (!controller.signal.aborted) {
+      const pcm = await synthesize(spoken);
+      normalizePcm(pcm);
+      fadeEdges(pcm);
+      await play(peerId, pcm);
     }
-    await play(peerId, await synthesize(spoken));
+  } catch (error) {
+    if (error?.name !== "AbortError") throw error;
   } finally {
     botSpeech.speaking = false;
+    botSpeech.kind = null;
     botSpeech.stopMs = Date.now() - callStartedAt;
+    if (botAbort === controller) botAbort = null;
   }
+}
+
+/** A floor take while the agent speaks: stop the TTS, drop the turn's reply
+ * and any queued filler/backchannel. The already-posted tail (a few hundred
+ * ms) plays out; no more PCM is posted. */
+function stopSpeaking(reason) {
+  // A barge during a filler/backchannel/greeting stops only that cue; only a
+  // barge on the reply cancels the turn. (The filler is not the answer.)
+  const cancelsTurn = botSpeech.speaking && botSpeech.kind === "reply";
+  speechGeneration += 1;
+  if (cancelsTurn) turnGeneration += 1;
+  botAbort?.abort();
+  if (botSpeech.speaking) log.info("barge", { reason, kind: botSpeech.kind });
 }
 
 /// The spoken form of a reply: `IDFON-SPEAK/1` carries it in its `text` field
@@ -218,6 +416,7 @@ function isLoud(pcm) {
 }
 
 let speaking = false;
+let bargePending = false; // a floor take must last BARGE_MIN_MS before it cancels a reply
 let quiet = 0;
 let utterance = Buffer.alloc(0);
 let frames = 0;
@@ -236,10 +435,51 @@ let bcd = null;
 // shortcut: each speak() is one utterance and the gap before it (the agent's
 // round trip) is always >= 200 ms, so the "last >=200 ms pause" clock restarts
 // at onset; pauses inside a streamed TTS run are invisible here.
-const botSpeech = { speaking: false, onsetMs: null, stopMs: null };
+const botSpeech = { speaking: false, kind: null, onsetMs: null, stopMs: null };
+let botAbort = null;
+let speechChain = Promise.resolve();
+let speechGeneration = 0;
+let turnGeneration = 0;
+let currentPeerId = null;
+const BC_POOL = ["Yeah.", "Right.", "Got it.", "I see."];
+const GREETING_TEXT = process.env.IDFON_VOICE_GREETING || "Hello! I'm here whenever you're ready.";
+const FILLER_TEXTS = (process.env.IDFON_VOICE_FILLERS ?? "One moment.|Still checking.")
+  .split("|").map((s) => s.trim()).filter(Boolean);
+const cueCache = new Map();
+function isCue(kind) {
+  return kind === "greeting" || kind === "backchannel" || kind === "filler";
+}
+async function primeCues() {
+  const cfg = engine.tts || {};
+  if ((cfg.provider || "openai-compatible") !== "elevenlabs") return;
+  const texts = [...new Set([GREETING_TEXT, ...FILLER_TEXTS, ...BC_POOL])];
+  for (const text of texts) {
+    if (cueCache.has(text)) continue;
+    try {
+      const pcm = await cuePcm(cfg, spokenText(text));
+      if (pcm) cueCache.set(text, pcm);
+    } catch (error) {
+      log.warn("cue cache failed", { text, error: String(error) });
+    }
+  }
+  log.info("cues cached", { count: cueCache.size });
+}
+let bcIndex = 0;
+let lastBcAt = 0;
+
+/** A short reaction while the caller still holds the floor (BCD decision). */
+function speakBackchannel() {
+  const now = Date.now();
+  if (now - lastBcAt < 1500 || botSpeech.speaking || speaking || !currentPeerId) return;
+  lastBcAt = now;
+  const text = BC_POOL[bcIndex++ % BC_POOL.length];
+  log.info("backchannel", { text });
+  speak(text, currentPeerId, "backchannel").catch((error) => log.warn("backchannel failed", { error: String(error) }));
+}
 
 async function onFrame(frame) {
   const pcm = Buffer.from(frame.pcm_base64, "base64");
+  currentPeerId = frame?.peer_id ?? currentPeerId;
   frames += 1;
   if (frames === 1 || frames % 500 === 0) log.info("frames", { count: frames, peer_id: frame?.peer_id });
   // Greet on connect: the live server-cascade plan has no greet turn — the
@@ -247,10 +487,10 @@ async function onFrame(frame) {
   // is silent until the caller speaks (the "no sound at all" report).
   if (frames === 1 && !greeted) {
     greeted = true;
-    const greeting = process.env.IDFON_VOICE_GREETING || "Hello! I'm here whenever you're ready.";
+    const greeting = GREETING_TEXT;
     log.info("greet", { text: greeting });
     const greetStart = Date.now() - callStartedAt;
-    speak(greeting, frame?.peer_id)
+    speak(greeting, frame?.peer_id, "greeting")
       .then(() => recorder.addTurn({ text: greeting, role: "agent", started_ms: greetStart, duration_ms: Date.now() - callStartedAt - greetStart }))
       .catch((error) => log.error("greet failed", { error: String(error) }));
     sendTranscript(frame?.peer_id, "agent", greeting, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
@@ -261,11 +501,20 @@ async function onFrame(frame) {
   if (decisions.includes("backchannel") || decisions.includes("barge")) {
     log.info("tyger", { decisions: decisions.join(",") });
   }
-  if (decisions.includes("barge")) recorder.recordPlaybackTruncated(Date.now() - callStartedAt);
+  if (decisions.includes("barge")) {
+    recorder.recordPlaybackTruncated(Date.now() - callStartedAt);
+    stopSpeaking("tyger barge");
+  }
   if (bcd) bcd.push(pcm);
   if (isLoud(pcm)) {
     if (!speaking) { speaking = true; utterance = pcm; }
     quiet = 0;
+    if (bargePending && (!botSpeech.speaking || botSpeech.kind !== "reply" || !speaking)) {
+      bargePending = false; // the reply ended or the acknowledgement stopped
+    } else if (bargePending && utterance.length / 2 / RATE >= 0.4) {
+      bargePending = false;
+      stopSpeaking("bcd floor_take");
+    }
     if (!tygerEnd) return;
   }
   if (!speaking && !tygerEnd) { utterance = Buffer.alloc(0); return; }
@@ -288,6 +537,7 @@ async function onFrame(frame) {
 
 async function handleTurn(speech, peerId, trace, turnEndMs) {
   const started = Date.now();
+  const generation = turnGeneration;
   try {
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
@@ -303,13 +553,39 @@ async function handleTurn(speech, peerId, trace, turnEndMs) {
     recorder.addTurn({ text: transcript, role: "user", started_ms: turnEndMs - captureMs, duration_ms: captureMs });
     sendTranscript(peerId, "caller", transcript, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const replyStart = Date.now();
-    const reply = (await forward(transcript)).trim();
+    // Cover a slow agent/tool turn without talking over the reply: a filler
+    // after ~1.2 s and a second at ~6 s, chained so they never overlap, and
+    // awaited before the real reply. Disable with IDFON_VOICE_FILLERS="".
+    const fillers = FILLER_TEXTS;
+    let replied = false;
+    let fillerChain = Promise.resolve();
+    const fillerTimers = [1200, 6000].map((ms, i) => setTimeout(() => {
+      const text = fillers[i];
+      if (replied || !text) return;
+      fillerChain = fillerChain.then(async () => {
+        if (replied || generation !== turnGeneration) return;
+        log.info("filler", { text, after_ms: ms });
+        await speak(text, peerId, "filler");
+      }).catch((error) => log.warn("filler failed", { error: String(error) }));
+    }, ms));
+    let reply;
+    try {
+      reply = (await forward(transcript)).trim();
+    } finally {
+      replied = true;
+      for (const timer of fillerTimers) clearTimeout(timer);
+    }
+    const replyMs = Date.now() - replyStart; // the agent turn, not the filler
+    await fillerChain; // the reply must not start inside a filler
+    if (generation !== turnGeneration) {
+      log.info("turn dropped after barge", { peer_id: peerId });
+      return;
+    }
     if (!reply) return;
-    const replyMs = Date.now() - replyStart;
     log.info("reply", { reply, peer_id: peerId, trace, reply_ms: replyMs });
     sendTranscript(peerId, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const playStart = Date.now();
-    await speak(reply, peerId);
+    await speak(reply, peerId, "reply");
     // Observation record: the agent turn is the delivery window (TTS + posting),
     // approximating when the caller hears the agent.
     recorder.addTurn({ text: spokenText(reply), role: "agent", started_ms: playStart - callStartedAt, duration_ms: Date.now() - playStart });
@@ -375,16 +651,29 @@ async function main() {
               const now = Date.now() - callStartedAt;
               const sinceOnset = botSpeech.onsetMs === null ? 5 : (now - botSpeech.onsetMs) / 1000;
               const sinceStop = botSpeech.stopMs === null ? 5 : (now - botSpeech.stopMs) / 1000;
-              const row = botStateRow(botSpeech.speaking, sinceOnset, sinceOnset, sinceStop);
+              const row = botStateRow(
+                botSpeech.speaking, sinceOnset, sinceOnset, sinceStop,
+                botSpeech.kind === "filler");
               for (const f of await model.chunk(chunk, [...row, ...row])) {
                 const d = decider.onFrame(f.intent, f.vad);
                 if (d.kind !== "none") {
                   recorder.recordBcdEvent(d.kind, now, d.p);
                   log.info("bcd", { kind: d.kind, p: d.p });
+                  if (d.kind === "floor_take" && botSpeech.speaking) {
+                    // A brief "yeah" is an acknowledgement, not a floor take;
+                    // let the reply finish unless the caller keeps talking.
+                    if (botSpeech.kind === "reply") bargePending = true;
+                    else stopSpeaking("bcd floor_take");
+                  } else if (d.kind === "backchannel" && !botSpeech.speaking) {
+                    speakBackchannel();
+                  }
                 }
               }
             }
           }).catch((error) => log.warn("bcd", { error: String(error) }));
+        },
+        reset() {
+          decider.reset();
         },
         flush() {
           return pump;
@@ -397,6 +686,7 @@ async function main() {
     }
   }
   log.info("listening", { bridge });
+  void primeCues();
   // Declare the real pipeline: the holder's startup info lists the client's
   // on-device options; the info screen should show what this engine uses.
   fetch(`${bridge}/voice/info`, {
@@ -435,3 +725,11 @@ async function main() {
 }
 
 main().catch(async (error) => { log.error("fatal", { error: String(error) }); await emitCallRecord(); process.exit(1); });
+
+// A supervised restart (or Ctrl-C) must not lose the call record: flush it
+// before exiting. SIGKILL still loses it, by design.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.on(signal, () => {
+    emitCallRecord().finally(() => process.exit(0));
+  });
+}
