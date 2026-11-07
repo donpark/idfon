@@ -61,6 +61,12 @@ def main() -> None:
               "Turn ranges — " if turn else "Barge audit — ")
              + os.path.basename(os.path.abspath(d)))
     if turn:
+        header_q = ("At the mark, <b>is the labelled event the right one</b> — a handoff, a "
+                    "silent tail, an overlap, or a backchannel? The clip starts just before the "
+                    "ender's last words; the mark is the turn end (shown per row).")
+        header_sub = ("6 s stereo clip, turn ender left / party taking the floor right; the ender "
+                      "stops shortly after the clip starts. Keys: <b>Y</b> yes, <b>N</b> no, "
+                      "<b>space</b> play/pause, <b>J</b>/<b>K</b> next/previous.")
         rubric_html = """
   <section class="rubric">
     <div class="col yes">
@@ -88,6 +94,11 @@ def main() -> None:
     </div>
   </section>"""
     elif endpoint:
+        header_q = ("At the mark, <b>was the caller taking the floor</b> — cutting in or starting a new "
+                    "turn — or was this just a pause, a noise, or a backchannel? Each clip starts just before the "
+                    "agent’s last words and the mark is where the barge fired (shown per row).")
+        header_sub = ("6 s stereo clip, caller left / agent right; the agent stops shortly after the clip starts. "
+                      "Keys: <b>Y</b> yes, <b>N</b> no, <b>space</b> play/pause, <b>J</b>/<b>K</b> next/previous.")
         rubric_html = """
   <section class="rubric">
     <div class="col yes">
@@ -114,6 +125,11 @@ def main() -> None:
     </div>
   </section>"""
     else:
+        header_q = ("At the mark, <b>was the caller taking the floor</b> — cutting in or starting a new "
+                    "turn — or was this just a pause, a noise, or a backchannel? Each clip starts just before the "
+                    "agent’s last words and the mark is where the barge fired (shown per row).")
+        header_sub = ("6 s stereo clip, caller left / agent right; the agent stops shortly after the clip starts. "
+                      "Keys: <b>Y</b> yes, <b>N</b> no, <b>space</b> play/pause, <b>J</b>/<b>K</b> next/previous.")
         rubric_html = """
   <section class="rubric">
     <div class="col yes">
@@ -194,11 +210,8 @@ def main() -> None:
 </style>
 <header>
   <h1>{html.escape(title)}</h1>
-  <div class="q">At the mark, <b>was the caller taking the floor</b> — cutting in or starting a new
-  turn — or was this just a pause, a noise, or a backchannel? Each clip starts just before the
-  agent’s last words and the mark is where the barge fired (shown per row).</div>
-  <div class="sub">6 s stereo clip, caller left / agent right; the agent stops shortly after the clip starts.
-  Keys: <b>Y</b> yes, <b>N</b> no, <b>space</b> play/pause, <b>J</b>/<b>K</b> next/previous.</div>
+  <div class="q">{header_q}</div>
+  <div class="sub">{header_sub}</div>
   <div class="bar">
     <span class="pill" id="progress">0 / 0</span>
     <span class="pill" id="counts">yes 0 · no 0</span>
@@ -241,9 +254,9 @@ function item(r, i) {{
       <div style="display:flex; gap:8px; align-items:center">
         <button class="play" title="play / pause (space)">▶</button>
         <audio controls preload="metadata" style="flex:1"
-               src="${{encodeURIComponent(r.clip)}}"></audio>
+               src="${{r.clip}}"></audio>
       </div>
-      <div class="meta">mark ${{r.mark_s}} s · ${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
+      <div class="meta">mark ${{r.mark_s}} s · ${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s ?? r.mark)}} s into the call
         <span class="reveal" data-reveal>· ${{detail(r)}}</span></div>
       ${{r.text ? `<div class="said">“${{r.text.replace(/</g, "&lt;")}}”</div>` : ""}}
     </div>
@@ -257,15 +270,17 @@ function item(r, i) {{
   play.onclick = () => {{
     if (audio.paused) {{ audio.currentTime = 0; audio.play().catch(() => {{}}); }} else audio.pause();
   }};
-  // start every playback from the mark-relative beginning, never where it stopped
-  audio.onplay = () => {{
-    if (audio.currentTime > 0.01) audio.currentTime = 0;
-    play.textContent = "❚❚";
-  }};
+  // clicking anywhere on the row plays the clip from its start
+  el.addEventListener("click", (e) => {{
+    if (e.target.closest("button, audio, input, .notes")) return;
+    audio.currentTime = 0;
+    audio.play().catch(() => {{}});
+  }});
+  audio.onplay = () => {{ play.textContent = "❚❚"; }};
   audio.onpause = () => {{ play.textContent = "▶"; }};
   audio.onerror = () => {{
     play.textContent = "!";
-    el.querySelector("[data-reveal]").textContent = "· audio failed to load: " + decodeURIComponent(audio.getAttribute("src"));
+    el.querySelector("[data-reveal]").textContent = "· audio failed to load: " + audio.getAttribute("src");
     el.querySelector("[data-reveal]").style.visibility = "visible";
   }};
   el.querySelectorAll("button[data-v]").forEach((b) => b.onclick = () => cast(r.sample_id, b.dataset.v, el));
