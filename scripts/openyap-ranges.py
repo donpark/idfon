@@ -160,7 +160,16 @@ def ranges(data: str, events: set[str], limit: int | None) -> list[dict]:
                 rows.append(e)
         if i % 200 == 0:
             print(f"  {i}/{len(dirs)} conversations, {len(rows)} events", flush=True)
-    return rows
+    # An overlap is seen from both directions (each turn notices the other's
+    # start), so keep one row per moment.
+    seen, uniq = set(), []
+    for r in rows:
+        key = (r["conversation_id"], r["kind"], r["mark"], r["turn_start"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+    return uniq
 
 
 def _clip(r: dict, data: str, bdir: str, clip_s: float) -> bool:
