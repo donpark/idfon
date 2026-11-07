@@ -115,6 +115,7 @@ enum SpeechEngines {
     static func prewarm(asr: String? = nil, tts: String? = nil) {
         let ttsChoice = tts.flatMap(TtsBackend.init(rawValue:)) ?? backend
         Task { await makeTts(ttsChoice).prepare() }
+        Task { await BackchannelCache.shared.prepare(backend: ttsChoice, language: SpeechVoice.callLanguage) }
         let asrChoice = asr.flatMap(AsrBackend.init(rawValue:)) ?? asrBackend
         switch asrChoice {
         case .nemotron:

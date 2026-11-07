@@ -210,6 +210,7 @@ final class VoiceAgentSession: NSObject {
             // here, once the peer id is known, before the recognizer is built.
             ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.backend
             tts = SpeechEngines.makeTts(ttsBackend)
+            Task { await BackchannelCache.shared.prepare(backend: ttsBackend, language: SpeechVoice.callLanguage) }
             asrBackend = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:)) ?? SpeechEngines.asrBackend
             setState(.listening(""))
             // A recognizer may need a first-run download/CoreML compile;
@@ -232,6 +233,37 @@ final class VoiceAgentSession: NSObject {
             await tts.prepare()
             timed("tts_ms", ttsStage)
             guard !stopRequested else { finish(); return }
+            // Fetch the greeting concurrently with the ASR warmup and the
+            // hydration sleep: it is an agent turn, and its round-trip is its
+            // floor. Text-only (`stream: false` on the remote path), so no
+            // audio can reach the mouth before the "answered" cue.
+            var greeting: (display: String, spoken: String)?
+            let greetTurn =
+                "The caller just connected on a voice call. Greet them briefly and invite them to speak."
+            let greetTask: Task<(value: (display: String, spoken: String)?, ms: Int), Never> =
+                Task { [weak self] in
+                guard let self else { return (nil, 0) }
+                await ChatStore.shared.whenHydrated()
+                let stage = Date()
+                let value: (display: String, spoken: String)?
+                if self.localAgent != nil {
+                    value = await self.reply(
+                        peerId: peer.id,
+                        text: greetTurn,
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(self.callId)-greet"
+                    )
+                } else {
+                    value = await self.sendAndAwait(
+                        peerId: peer.id,
+                        text: greetTurn,
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(self.callId)-greet",
+                        stream: false
+                    )
+                }
+                return (value, Int(Date().timeIntervalSince(stage) * 1000))
+            }
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
             let sleepStage = Date()
@@ -249,32 +281,10 @@ final class VoiceAgentSession: NSObject {
                 timed("director_ms", stage)
             }
             guard !stopRequested else { finish(); return }
-            var greeting: (display: String, spoken: String)?
+            let greetResult = await greetTask.value
             if !stopRequested {
-                let greetStage = Date()
-                let greetTurn =
-                    "The caller just connected on a voice call. Greet them briefly and invite them to speak."
-                // Proxy mode greets through the agent (so the caller never
-                // hears a "voice director" persona). On-device mode greets
-                // locally, and passive mode has no director at all.
-                if localAgent != nil {
-                    // On-device agent: greet locally. Proxy and passive greet
-                    // through the agent.
-                    greeting = await reply(
-                        peerId: peer.id,
-                        text: greetTurn,
-                        logPrefix: "voice-agent-greet",
-                        spokenTurnId: "\(callId)-greet"
-                    )
-                } else {
-                    greeting = await sendAndAwait(
-                        peerId: peer.id,
-                        text: greetTurn,
-                        logPrefix: "voice-agent-greet",
-                        spokenTurnId: "\(callId)-greet"
-                    )
-                }
-                timed("greet_ms", greetStage)
+                greeting = greetResult.value
+                stages["greet_ms"] = greetResult.ms
             }
             stages["total_ms"] = Int(Date().timeIntervalSince(setupStart) * 1000)
             let stageLine = stages.sorted { $0.key < $1.key }
@@ -562,10 +572,11 @@ final class VoiceAgentSession: NSObject {
         peerId: String,
         text: String,
         logPrefix: String,
-        spokenTurnId: String? = nil
+        spokenTurnId: String? = nil,
+        stream: Bool = true
     ) async -> (display: String, spoken: String)? {
         guard let message = await sendAndMatchReply(
-            peerId: peerId, text: text, turnId: spokenTurnId, logPrefix: logPrefix),
+            peerId: peerId, text: text, turnId: spokenTurnId, logPrefix: logPrefix, stream: stream),
               case .text(let raw) = message.kind else {
             Automation.mark("\(logPrefix): FAIL no reply")
             resetUnitStream() // close an armed phase the stream may have opened
@@ -933,7 +944,7 @@ final class VoiceAgentSession: NSObject {
     /// be taken for the reply — and the request names its turn so the reply
     /// can be matched exactly (see `waitForReply`).
     private func sendAndMatchReply(
-        peerId: String, text: String, turnId: String?, logPrefix: String
+        peerId: String, text: String, turnId: String?, logPrefix: String, stream: Bool = true
     ) async -> ChatMessage? {
         await ChatStore.shared.whenHydrated()
         var context = callContext
@@ -954,7 +965,7 @@ final class VoiceAgentSession: NSObject {
             Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
             return nil
         }
-        return await waitForReply(peerId: peerId, excluding: before, expecting: turnId)
+        return await waitForReply(peerId: peerId, excluding: before, expecting: turnId, stream: stream)
     }
 
     /// The reply to one turn: the new agent message whose speak envelope
@@ -965,7 +976,7 @@ final class VoiceAgentSession: NSObject {
     /// Agents that set no correlation id fall back to the first new message —
     /// the historical behavior.
     private func waitForReply(
-        peerId: String, excluding: Set<String>, expecting correlationId: String?
+        peerId: String, excluding: Set<String>, expecting correlationId: String?, stream: Bool = true
     ) async -> ChatMessage? {
         for _ in 0..<60 {
             if stopRequested { return nil }
@@ -983,7 +994,7 @@ final class VoiceAgentSession: NSObject {
             // Speech units (loop contract §2): the mouth follows the delta
             // stream — closing chunks speak as they arrive, so first audio
             // lands at the first sentence instead of at reply end.
-            await feedUnitStream(peerId: peerId, excluding: excluding)
+            if stream { await feedUnitStream(peerId: peerId, excluding: excluding) }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return nil
@@ -1145,11 +1156,26 @@ final class VoiceAgentSession: NSObject {
         Automation.mark("turn-taker: tyger backchannel -> feedback")
         feedbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard case .listening = self.state, !self.stopRequested, !self.responseArrived else {
+                self.feedbackTask = nil
+                return
+            }
+            // Pre-rendered cue first: the reaction is 1-4 words, so the AFM
+            // call + on-demand synthesis is slower than the cue is useful
+            // (#199). Miss → the old path. Hum spellings never reach the
+            // mouth: Phonon sounds letter strings out as words ("mm-hm" is
+            // heard as "lim", "mm" as "meem").
+            let next = BackchannelFiller.fallbackCue()
+            if let cue = BackchannelCache.shared.cue(for: next) {
+                self.lastFeedback = cue.text
+                Automation.mark("turn-taker: tyger backchannel cached text=\(cue.text)")
+                await FeedbackEar.suppress { await AudioIO.shared.play(cue.buffer) }
+                self.feedbackTask = nil
+                return
+            }
             // Contextual ack off the ASR partial (the tyger filler recipe on
-            // AFM, fail-open to a rotating safe word). Hum spellings never
-            // reach the mouth: Phonon sounds letter strings out as words
-            // ("mm-hm" is heard as "lim", "mm" as "meem").
-            let text = await BackchannelFiller.ack(partial: heard) ?? BackchannelFiller.fallbackCue()
+            // AFM, fail-open to a rotating safe word).
+            let text = await BackchannelFiller.ack(partial: heard) ?? next
             guard case .listening = self.state, !self.stopRequested, !self.responseArrived else {
                 self.feedbackTask = nil
                 return
@@ -1167,6 +1193,8 @@ final class VoiceAgentSession: NSObject {
         await cancelFiller()
         if feedbackTask != nil {
             tts.stop()
+            // A pre-rendered cue plays on the bus, not through the engine.
+            AudioIO.shared.stopPlayback()
             await feedbackTask?.value
             feedbackTask = nil
         }
