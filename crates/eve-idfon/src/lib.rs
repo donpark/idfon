@@ -617,6 +617,29 @@ pub fn voice_info(params: &serde_json::Value, engine: &[serde_json::Value]) -> s
     Value::Object(info)
 }
 
+/// The intro's audio layout: an explicit `audio` object wins; otherwise it
+/// reports the pipeline's current truth (24 kHz mono PCM), not an assumption
+/// from the station's band or source codec.
+fn manifest_audio(params: &serde_json::Value) -> serde_json::Value {
+    if let Some(audio) = params
+        .get("audio")
+        .filter(|value| value.is_object())
+    {
+        return audio.clone();
+    }
+    let route = voice_route_from_live_params(params);
+    let sample_rate = match route.audio.as_deref() {
+        Some("pcm48k") => 48_000,
+        _ => 24_000,
+    };
+    serde_json::json!({
+        "codec": "pcm_s16le",
+        "sample_rate": sample_rate,
+        "channels": 1,
+        "layout": "mono",
+    })
+}
+
 /// The agent's `idfon.json` manifest: its declared metadata with the holder's
 /// resolved voice pipeline merged in. Served as a resource at path
 /// `idfon.json` (`idfon://<holder>/idfon.json`) and mirrored by the bridge's
@@ -644,6 +667,12 @@ pub fn idfon_manifest(params: &serde_json::Value, engine: &[serde_json::Value]) 
         object
             .entry("kind")
             .or_insert_with(|| serde_json::Value::from(if menu { "menu" } else { "station" }));
+        // The contact's declared output layout. The pipeline is mono 24 kHz
+        // today; a live config can override this once the stream backend and
+        // the app's renderer carry the layout (FM stereo, 5.1, ...).
+        object
+            .entry("audio")
+            .or_insert_with(|| manifest_audio(params));
         if menu {
             if let Some(default) = params
                 .get("default")
@@ -2683,6 +2712,19 @@ mod tests {
             &[],
         );
         assert!(station.get("default").is_none());
+        // The intro reports the pipeline's actual layout unless the contact
+        // declares another one.
+        assert_eq!(manifest["audio"]["layout"], "mono");
+        assert_eq!(manifest["audio"]["channels"], 1);
+        let stereo = idfon_manifest(
+            &serde_json::json!({
+                "audio": { "codec": "pcm_s16le", "sample_rate": 48000,
+                             "channels": 2, "layout": "stereo" }
+            }),
+            &[],
+        );
+        assert_eq!(stereo["audio"]["channels"], 2);
+        assert_eq!(stereo["audio"]["layout"], "stereo");
         // No menu config: nothing advertised.
         let manifest = idfon_manifest(&serde_json::json!({}), &[]);
         assert!(manifest.get("menu").is_none());

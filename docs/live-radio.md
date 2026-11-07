@@ -104,6 +104,31 @@ a whole agent unit — see **The radio-world agent** below.
 - `default` is the **contact's** choice, not the caller's: set it in the unit's
   `live.json` (`agents/radio-world/live.json`, e.g. `"default": "France/RMC
   FR"`); it is a menu path resolved exactly like `show=`.
+### Audio layout (stereo, mono, 5.1)
+
+The intro's `audio` block is the contact's declared output:
+
+```json
+{ "codec": "pcm_s16le", "sample_rate": 24000, "channels": 1, "layout": "mono" }
+```
+
+It reports what the station actually sends; a live config can override it.
+FM/AM is a property of the stream, not the band name: a stereo FM feed and a
+mono AM feed are both just source layouts. A menu should eventually tag each
+leaf (`audio=stereo|mono|5.1`) so the client picks a compatible profile per
+selection; the deep link then carries none of it.
+
+**Current limit (2026-11-06).** The station plane is 24 kHz mono 20 ms PCM:
+the stream backend's ffmpeg downmixes (`-ac 1`), the programme frames are
+mono, and the app's live profile is `pcm24k`. Stereo is the first media slice:
+stop downmixing, carry interleaved frames at the negotiated rate, match the
+invite's `audio_sample_rate`/channels, and render the layout in `AudioIO` (its
+playback-only `.listen` profile already exists). 5.1 needs a multichannel
+layout plus a codec/renderer that carries it (Opus 5.1, AAC, AC-3) and a
+channel-aware plane; possible, but not a metadata-only change. The intro
+starts at mono because advertising a layout the plane cannot carry would be
+wrong.
+
 - The holder exposes the OPML as a resource — `idfon://<holder>/menu.opml`,
   advertised as `menu.opml` in the `idfon.json` manifest (an agent-supplied
   `menu` block wins) — fetched by the apps like the voice catalog. A manifest
