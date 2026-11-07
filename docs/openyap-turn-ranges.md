@@ -138,7 +138,26 @@ the event that means "the user's turn ended":
 | overlap | 76 | 0 (0%) | 0 (0%) | 0/33 (0%) |
 
 Reading: the direction is right and clean — ENDPOINT never fires on an
-interruption — but recall is low. The cause is the mode track, not the labels.
+interruption — but recall is low.
+
+**Per-clip, against a base rate.** "The nearest ENDPOINT is close" is trivially
+true when a clip fires many events, so each rate is compared with the chance of
+one uniform event in a 10 s window landing that close:
+
+| kind | events/clip | within ±0.32 s | chance | enrichment |
+| --- | ---: | ---: | ---: | ---: |
+| handoff | 0.5 | 3/28 (11%) | 3% | **3.7×** |
+| silent_tail | 0.6 | 4/16 (25%) | 3% | **8.0×** |
+| overlap | 0.2 | 0/76 (0%) | 2% | 0× |
+
+The silent-agent run (`--silent-agent`, LISTEN init, agent channel muted) does
+**not** improve this: events/clip rises to 1.2–1.3, the hit rate stays at 11%
+(handoff) and falls to 19% (silent_tail), and the chance level rises to 7–8%. So
+enrichment drops to 1.6× and 2.4× — muting the agent channel makes the model
+spray events rather than aim them. Silencing is not the fix for the mode
+confound; a LISTEN-mode gate on the normal run is.
+
+The cause is the mode track, not the labels.
 In a two-human clip, ch1 (the model's "agent" channel) is a person who talks, so
 the model sits in SPEAK mode for ~40% of the decision lead. ENDPOINT only fires
 in LISTEN mode, so those clips cannot produce it by construction. Restricting to
