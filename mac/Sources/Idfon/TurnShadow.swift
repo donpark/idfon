@@ -4,9 +4,9 @@ import TygerVoiceCoreAI
 import TygerVoiceMLX
 
 /// Shadow turn-taker: runs the mac tier's turn engine beside the text
-/// `Segmenter` and marks its events for a decision-log diff. It changes NO
-/// behavior — the segmenter's 1.2 s no-change commit stays authoritative until
-/// the diff says otherwise (the swap-over convention).
+/// `Segmenter` and marks its events for a decision-log diff. In `tyger` mode
+/// its ENDPOINT can only shorten a turn; the segmenter's gap stays the fallback
+/// (and the ceiling), so nothing here can hold a turn open.
 ///
 /// Phase-1 note: the agent channel is now REAL (PlaybackBus — Kokoro TTS wavs,
 /// remote call audio, and call tones fan in at play time), so echo suppression
@@ -46,6 +46,13 @@ final class TurnShadow: AudioPlaybackObserver {
     }
 
     private var mode = "listen"
+    /// Consecutive quiet 80 ms frames (the rules' VAD floor).
+    private var quietFrames = 0
+    /// A model ENDPOINT may only commit after this many quiet frames (~480 ms).
+    /// The shipped student gate fires on 160 ms of `p_end` evidence, short
+    /// enough to land on a mid-sentence hesitation (`docs/voice-tyger.md`).
+    private static let endpointQuietFrames = 6
+    private static let vadDb: Float = -50 // turns.rs VAD_DB
     /// The active-mode sink (the tyger option): non-FRAME decisions as they
     /// fire. The Automation marks stay either way (the diff log).
     var onDecision: ((String) -> Void)?
@@ -213,11 +220,18 @@ final class TurnShadow: AudioPlaybackObserver {
         guard !isStopped else { return }
         let agent = agentHops.isEmpty ? [Float](repeating: 0, count: hop.count) : agentHops.removeFirst()
         capture.append(userHop: hop, agentHop: agent)
+        for db in TurnRuntime.frameEnergy(hop) {
+            quietFrames = db > Self.vadDb ? 0 : quietFrames + 1
+        }
         let events = engine.feed(userHop: hop, agentHop: agent, mode: mode)
         for e in events where e.kind != "FRAME" {
             let turn = (e.dict["turn_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
             let onset = (e.dict["onset_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
             Automation.mark("turn-shadow: \(e.kind) frame=\(e.frame) turn_s=\(turn) onset_s=\(onset)")
+            if e.kind == "ENDPOINT", quietFrames < Self.endpointQuietFrames {
+                Automation.mark("turn-shadow: ENDPOINT held quiet_ms=\(quietFrames * 80)")
+                continue
+            }
             onDecision?(e.kind)
         }
     }

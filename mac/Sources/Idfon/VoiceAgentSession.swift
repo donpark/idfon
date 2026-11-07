@@ -1053,6 +1053,7 @@ final class VoiceAgentSession: NSObject {
               asr?.bargeInEngages ?? true,
               voice.isCancellable(text),
               !voice.isEcho(spoken: lastSpoken ?? "", heard: text),
+              !Self.isReplyPrefix(text, of: lastSpoken),
               !isFeedbackEcho(text)
         else {
             Automation.mark("voice-agent: barge-in ignored text=\(text)")
@@ -1061,6 +1062,21 @@ final class VoiceAgentSession: NSObject {
         Automation.mark("voice-agent: barge-in engaged text=\(text)")
         bargeInHeard = text
         tts.stop()
+    }
+
+    /// True when `heard` is the opening of the reply we are playing. VPIO's
+    /// AEC needs about a second to converge on the first playback, and
+    /// `isEcho` only drops 3+ token runs, so the first words of a reply
+    /// ("I apologize" from "I apologize, please speak.") slipped through as a
+    /// barge (2026-11-07 device log). A single token stays a valid barge.
+    nonisolated static func isReplyPrefix(_ heard: String, of spoken: String?) -> Bool {
+        guard let spoken else { return false }
+        func tokens(_ text: String) -> [String] {
+            text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        }
+        let h = tokens(heard), s = tokens(spoken)
+        guard h.count >= 2, s.count >= h.count else { return false }
+        return Array(s.prefix(h.count)) == h
     }
 
     static func stripEnvelopes(_ text: String) -> String {

@@ -166,6 +166,8 @@ final class AppleTtsEngine: NSObject, TtsEngine {
     let name = "apple"
     private let synthesizer = AVSpeechSynthesizer()
     private let completion = SpeechCompletion()
+    private var tracker: StreamTracker?
+    private(set) var lastLatencyMs: Int?
 
     func prepare() async {}
 
@@ -174,13 +176,11 @@ final class AppleTtsEngine: NSObject, TtsEngine {
         utterance.voice = SpeechVoice.best(language: SpeechVoice.callLanguage)
         utterance.prefersAssistiveTechnologySettings = false
         Automation.mark("voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false")
-        // Render through the call's single playback sink when one is wired, so
+        // Stream through the call's single playback sink when one is wired, so
         // Apple TTS plays on the echo-cancellation reference instead of the
         // synthesizer's private output (docs/voice-side-channel.md).
         if let sink = playback {
-            for chunk in await Self.render(utterance, with: synthesizer) {
-                await sink.play(chunk)
-            }
+            await stream(utterance, to: sink)
             return
         }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -190,72 +190,40 @@ final class AppleTtsEngine: NSObject, TtsEngine {
         }
     }
 
+    /// `write` buffers go onto the bus as they arrive: the Apple fallback must
+    /// meet Phonon's contract (first audio before the utterance ends, and a
+    /// chunk-cancel barge). Whole-clip rendering made a barge unable to stop
+    /// the reply (2026-11-07 device log).
+    private func stream(_ utterance: AVSpeechUtterance, to sink: AudioSink) async {
+        let start = Date()
+        let tracker = StreamTracker()
+        self.tracker = tracker
+        synthesizer.write(utterance) { buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
+                tracker.generatorDone() // the final empty buffer ends the utterance
+                return
+            }
+            guard tracker.beginChunk() else { return }
+            tracker.markFirstAudio(ms: Int(-start.timeIntervalSinceNow * 1000))
+            sink.playStream(pcm, done: tracker.chunkDone)
+        }
+        await tracker.wait()
+        if let first = tracker.firstAudioMs {
+            lastLatencyMs = first
+            Automation.mark(
+                "voice: apple first audio \(first)ms chunks=\(tracker.chunks) total=\(Int(Date().timeIntervalSince(start) * 1000))ms")
+        }
+        self.tracker = nil
+    }
+
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         // stopSpeaking cancels via `didCancel`, but resume here too so a hangup
         // can never leave `speak()` awaiting.
         completion.complete()
-    }
-
-    /// Render an utterance to PCM via `write(_:toBufferCallback:)` (iOS 13+).
-    /// The callback delivers a zero-length buffer at end of stream.
-    private static func render(
-        _ utterance: AVSpeechUtterance, with synthesizer: AVSpeechSynthesizer
-    ) async -> [AVAudioPCMBuffer] {
-        let collector = SpeechBufferCollector()
-        synthesizer.write(utterance) { buffer in
-            guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
-                collector.finish()
-                return
-            }
-            collector.add(pcm)
-        }
-        return await collector.wait(timeout: 15)
-    }
-}
-
-/// Collects the PCM chunks `AVSpeechSynthesizer.write` streams, completing once
-/// (on the end-of-stream marker or a timeout) so `speak()` can never hang.
-private final class SpeechBufferCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var chunks: [AVAudioPCMBuffer] = []
-    private var continuation: CheckedContinuation<[AVAudioPCMBuffer], Never>?
-    private var finished = false
-
-    func add(_ buffer: AVAudioPCMBuffer) {
-        lock.lock()
-        if !finished { chunks.append(buffer) }
-        lock.unlock()
-    }
-
-    func finish() {
-        lock.lock()
-        guard !finished else { lock.unlock(); return }
-        finished = true
-        let continuation = self.continuation
-        let result = chunks
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(returning: result)
-    }
-
-    func wait(timeout: TimeInterval) async -> [AVAudioPCMBuffer] {
-        let timeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            self?.finish()
-        }
-        defer { timeoutTask.cancel() }
-        return await withCheckedContinuation { continuation in
-            lock.lock()
-            if finished {
-                let result = chunks
-                lock.unlock()
-                continuation.resume(returning: result)
-            } else {
-                self.continuation = continuation
-                lock.unlock()
-            }
-        }
+        tracker?.stop()
+        playback?.stopPlayback()
+        tracker = nil
     }
 }
 
@@ -570,6 +538,7 @@ private final class StreamTracker: @unchecked Sendable {
         lock.lock()
         stopped = true
         lock.unlock()
+        finish() // a stop must not leave `wait()` hanging (Apple's write has no end marker after cancel)
     }
 
     func markFirstAudio(ms: Int) {
