@@ -131,7 +131,7 @@ final class BubbleReplay {
             }
             CallFeedback.post("Cloned voice — not the original audio")
         }
-        playSynth(messageID: messageID, text: text, peerID: peerID)
+        playSynth(messageID: messageID, role: role, text: text, peerID: peerID)
     }
 
     /// The holder's ticketed audio: fetch, cache locally, play. A failed fetch
@@ -158,7 +158,7 @@ final class BubbleReplay {
             }
             Automation.mark("turn-replay: ticket audio failed key=\(turnID)")
             if role == "agent", mode != .exact {
-                self.playSynth(messageID: messageID, text: text, peerID: peerID)
+                self.playSynth(messageID: messageID, role: role, text: text, peerID: peerID)
             } else {
                 self.clearReading()
                 CallFeedback.post("Stored audio could not be loaded")
@@ -186,10 +186,12 @@ final class BubbleReplay {
 
     // MARK: - re-synthesis (P0)
 
-    private func playSynth(messageID: String, text: String, peerID: String) {
+    private func playSynth(messageID: String, role: String, text: String, peerID: String) {
         let pick = ContactOnDeviceEngines.tts(for: peerID).flatMap(TtsBackend.init(rawValue:))
         let engine = SpeechEngines.makeTts(pick ?? SpeechEngines.ttsBackend)
-        engine.voice = voice
+        // #202: agent messages replay in the agent's voice (per-contact); the
+        // fallback voice is the caller-clone knob (later features).
+        engine.voice = role == "agent" ? ContactVoice.value(for: peerID) : voice
         self.engine = engine
         readingID = messageID
         onChange?()

@@ -235,6 +235,32 @@ enum ContactOnDeviceEngines {
     }
 }
 
+/// The agent's voice (#202): a per-contact Phonon voice name used to
+/// re-synthesize that contact's messages on replay. Absent = the engine
+/// default. This is the agent's voice as configured; generating true voices
+/// from samples at runtime is the later step (docs/voice-samples.md).
+enum ContactVoice {
+    private static let key = "idfon.contact-voice"
+
+    static func value(for peerID: String) -> String? {
+        table()[peerID]
+    }
+
+    static func set(_ value: String?, for peerID: String) {
+        var next = table()
+        if let value {
+            next[peerID] = value
+        } else {
+            next.removeValue(forKey: peerID)
+        }
+        UserDefaults.standard.set(next, forKey: key)
+    }
+
+    private static func table() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+    }
+}
+
 /// How the voice layer treats the turns of a client-cascade call
 /// (`docs/voice-agent-modes.md`). Passive puts nothing in front of the wrapped
 /// agent: the turn is the caller's own words. Proxy runs the on-device

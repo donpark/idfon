@@ -814,10 +814,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     /// Cached bubble row height; measured from the same attributed string the
-    /// text view renders, so markdown line wraps can't clip.
+    /// text view renders, so markdown line wraps can't clip. Incoming text
+    /// reserves the replay button's slot (#202) — measure what drawing draws.
     private func textHeight(for message: ChatMessage, text: String) -> CGFloat {
         if let cached = textHeights[message.id] { return cached }
-        let height = renderedHeight(text)
+        let height = renderedHeight(text, reserved: message.outgoing ? 0 : Self.replaySlotWidth)
         textHeights[message.id] = height
         return height
     }
@@ -872,17 +873,35 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             tv.textContainer?.lineFragmentPadding = 0
             tv.textStorage?.setAttributedString(renderText(text))
             tv.translatesAutoresizingMaskIntoConstraints = false
-            bubble.addSubview(tv)
             // row height cache includes 12pt padding (6 top + 6 bottom); the
             // remaining 10 was label slack, now explicit so links don't clip
-            NSLayoutConstraint.activate([
-                tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
-                tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
-                tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
-                tv.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
-                tv.heightAnchor.constraint(equalToConstant: textHeight(for: message, text: text) - 16),
-                bubble.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxBubbleWidth),
-            ])
+            if message.outgoing {
+                bubble.addSubview(tv)
+                NSLayoutConstraint.activate([
+                    tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
+                    tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
+                    tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                    tv.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                    tv.heightAnchor.constraint(equalToConstant: textHeight(for: message, text: text) - 16),
+                    bubble.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxBubbleWidth),
+                ])
+            } else {
+                // #202: agent messages replay in the agent's voice — the same
+                // Read/Stop button and text reservation as transcript bubbles.
+                let replay = makeReplayButton(message)
+                for view in [tv, replay] { bubble.addSubview(view) }
+                NSLayoutConstraint.activate([
+                    tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
+                    tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
+                    tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                    tv.trailingAnchor.constraint(equalTo: replay.leadingAnchor, constant: -8),
+                    tv.heightAnchor.constraint(equalToConstant: textHeight(for: message, text: text) - 16),
+                    replay.widthAnchor.constraint(equalToConstant: Self.replaySlotWidth - 8),
+                    replay.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                    replay.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                    bubble.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxBubbleWidth),
+                ])
+            }
         case .recording(let ticket, let durationMs):
             let play = NSButton(image: NSImage(systemSymbolName: playingMessageId == message.id ? "pause.fill" : "play.fill",
                                                accessibilityDescription: "Play voice message")!,
@@ -1095,18 +1114,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             tv.textStorage?.setAttributedString(renderText("\(transcript.text)\(suffix)"))
             tv.translatesAutoresizingMaskIntoConstraints = false
             // #202: Read/Stop replays the turn (exact audio when stored, else
-            // the contact's on-device voice; right-click for the mode menu — a
-            // click gesture would fight the text view's selection).
-            let replay = NSButton(title: BubbleReplay.shared.isReading(message.id) ? "Stop" : "Read",
-                                  target: self, action: #selector(replayTapped(_:)))
-            replay.bezelStyle = .rounded
-            replay.controlSize = .small
-            replay.font = NSFont.systemFont(ofSize: 11)
-            replay.identifier = NSUserInterfaceItemIdentifier(message.id)
-            replay.translatesAutoresizingMaskIntoConstraints = false
-            let menuClick = NSClickGestureRecognizer(target: self, action: #selector(replayMenuTapped(_:)))
-            menuClick.buttonMask = 0x2 // right-click
-            replay.addGestureRecognizer(menuClick)
+            // the agent's voice; right-click for the mode menu — a click
+            // gesture would fight the text view's selection).
+            let replay = makeReplayButton(message)
             for view in [tv, replay] { bubble.addSubview(view) }
             NSLayoutConstraint.activate([
                 tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
@@ -1670,39 +1680,77 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             }))
     }
 
-    /// #202 P0: Read hears the turn — its exact audio when stored (P1/P2),
-    /// else re-synthesized in the contact's on-device voice; Stop (or another
-    /// bubble's Read) ends it. Notices ride the banner.
+    /// #202: the Read/Stop button beside a replayable bubble (agent text and
+    /// transcript bubbles), with the right-click mode menu.
+    private func makeReplayButton(_ message: ChatMessage) -> NSButton {
+        let replay = NSButton(title: BubbleReplay.shared.isReading(message.id) ? "Stop" : "Read",
+                              target: self, action: #selector(replayTapped(_:)))
+        replay.bezelStyle = .rounded
+        replay.controlSize = .small
+        replay.font = NSFont.systemFont(ofSize: 11)
+        replay.identifier = NSUserInterfaceItemIdentifier(message.id)
+        replay.translatesAutoresizingMaskIntoConstraints = false
+        let menuClick = NSClickGestureRecognizer(target: self, action: #selector(replayMenuTapped(_:)))
+        menuClick.buttonMask = 0x2 // right-click
+        replay.addGestureRecognizer(menuClick)
+        return replay
+    }
+
+    /// #202 P0: Read hears the message — its exact audio when stored (P1/P2),
+    /// else re-synthesized in the agent's voice; Stop (or another bubble's
+    /// Read) ends it. Notices ride the banner.
     @objc private func replayTapped(_ sender: NSButton) {
         replay(messageID: sender.identifier?.rawValue, mode: .auto)
     }
 
+    /// #202: the replayable kinds — spoken turns and agent text messages.
+    private func replayKind(_ message: ChatMessage) -> (role: String, text: String, final: Bool, turnID: String, ticket: String?)? {
+        switch message.kind {
+        case .callTranscript(let transcript):
+            return (transcript.role, transcript.text, transcript.final, transcript.turnId, transcript.audioTicket)
+        case .text(let body) where !message.outgoing:
+            return ("agent", body, true, message.id, nil)
+        default:
+            return nil
+        }
+    }
+
     /// #202 right-click options: exact vs re-synthesized playback, and the
-    /// replay voice (the P3 opt-in: a caller turn with no stored original
-    /// replays in this voice — the user's clone — and says so).
+    /// agent's voice (per-contact; a caller turn keeps the clone-voice
+    /// opt-in).
     @objc private func replayMenuTapped(_ gesture: NSClickGestureRecognizer) {
         guard let messageId = gesture.view?.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
-              case .callTranscript(let transcript) = message.kind,
-              transcript.final, !transcript.text.isEmpty,
+              let kind = replayKind(message), kind.final, !kind.text.isEmpty,
               let view = gesture.view
         else { return }
-        let hasAudio = BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket)
+        let hasAudio = BubbleReplay.shared.hasAudio(turnID: kind.turnID, ticket: kind.ticket)
+        let isAgent = kind.role == "agent"
         let menu = NSMenu()
         if hasAudio {
             menu.addItem(replayItem("Play Original Audio", "exact", messageId))
         }
-        if transcript.role == "agent" || BubbleReplay.shared.voice != nil {
+        if isAgent || BubbleReplay.shared.voice != nil {
             menu.addItem(replayItem("Play Re-synthesized", "synth", messageId))
         }
         let voiceMenu = NSMenu()
-        voiceMenu.addItem(replayItem("Contact's Voice (default)", "voice-clear", messageId))
-        for name in PhononVoices.names() {
-            voiceMenu.addItem(replayItem(name, "voice:\(name)", messageId))
+        let voiceRoot: NSMenuItem
+        if isAgent {
+            voiceMenu.addItem(replayItem("Default", "agent-voice-clear", messageId))
+            for name in PhononVoices.names() {
+                voiceMenu.addItem(replayItem(name, "agent-voice:\(name)", messageId))
+            }
+            voiceRoot = NSMenuItem(title: "Agent Voice", action: nil, keyEquivalent: "")
+            voiceRoot.toolTip = "The voice used to re-synthesize this contact's messages on replay. Exact audio, when stored, always plays first."
+        } else {
+            voiceMenu.addItem(replayItem("Off (no substitution)", "my-voice-clear", messageId))
+            for name in PhononVoices.names() {
+                voiceMenu.addItem(replayItem(name, "my-voice:\(name)", messageId))
+            }
+            voiceRoot = NSMenuItem(title: "My Voice", action: nil, keyEquivalent: "")
+            voiceRoot.toolTip = "A clone voice replays your own turns when no original is stored. Use only a voice made from your own voice or one you have consent to use — it plays on device."
         }
-        let voiceRoot = NSMenuItem(title: "Replay Voice", action: nil, keyEquivalent: "")
         voiceRoot.submenu = voiceMenu
-        voiceRoot.toolTip = "A clone voice replays your own turns when no original is stored. Use only a voice made from your own voice or one you have consent to use — it plays on device."
         menu.addItem(voiceRoot)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height), in: view)
     }
@@ -1715,11 +1763,19 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc private func replayModeTapped(_ sender: NSMenuItem) {
-        guard let pick = sender.representedObject as? [String], pick.count == 2 else { return }
-        if pick[1] == "voice-clear" {
+        guard let pick = sender.representedObject as? [String], pick.count == 2,
+              let message = history.first(where: { $0.id == pick[0] }) else { return }
+        switch pick[1] {
+        case "agent-voice-clear":
+            ContactVoice.set(nil, for: message.peerId)
+        case let value where value.hasPrefix("agent-voice:"):
+            ContactVoice.set(String(value.dropFirst("agent-voice:".count)), for: message.peerId)
+        case "my-voice-clear":
             BubbleReplay.shared.voice = nil
-        } else if pick[1].hasPrefix("voice:") {
-            BubbleReplay.shared.voice = String(pick[1].dropFirst("voice:".count))
+        case let value where value.hasPrefix("my-voice:"):
+            BubbleReplay.shared.voice = String(value.dropFirst("my-voice:".count))
+        default:
+            break
         }
         replay(messageID: pick[0], mode: pick[1] == "exact" ? .exact : .synth)
     }
@@ -1727,12 +1783,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private func replay(messageID: String?, mode: BubbleReplay.Mode) {
         guard let messageId = messageID,
               let message = history.first(where: { $0.id == messageId }),
-              case .callTranscript(let transcript) = message.kind else { return }
+              let kind = replayKind(message) else { return }
         let action = BubbleReplay.shared.tap(
-            messageID: message.id, role: transcript.role, text: transcript.text,
-            final: transcript.final, peerID: message.peerId,
-            callActive: LiveCall.shared.state != .idle,
-            turnID: transcript.turnId, ticket: transcript.audioTicket, mode: mode)
+            messageID: message.id, role: kind.role, text: kind.text, final: kind.final,
+            peerID: message.peerId, callActive: LiveCall.shared.state != .idle,
+            turnID: kind.turnID, ticket: kind.ticket, mode: mode)
         if case .notice(let text) = action { CallFeedback.post(text) }
     }
 

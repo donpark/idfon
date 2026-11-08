@@ -193,8 +193,11 @@ another agent is *not* implemented — wrapping happens above the holder.)
 Transcripts ride out as `IDFON-CALL/1` snapshots and into the durable record
 buffer (P0), exactly as the GPT-Live path does.
 
-**Replay (#202).** A spoken bubble replays the turn's exact audio when one
-exists, else it re-synthesizes in the contact's on-device voice. Sources of
+**Replay (#202).** Any agent message — a spoken bubble or a typed reply —
+replays the turn's exact audio when one exists, else re-synthesized in the
+**agent's voice**: the per-contact `ContactVoice` Phonon pick (the agent's
+voice as configured; runtime voice generation from samples is the later
+step, `docs/voice-samples.md`). Sources of
 exact audio: the `IDFON-CALL/1` body may carry `audio_ticket` — a blob ticket
 for that turn's TTS PCM (the relay stores the chunks it posted, barge-trimmed,
 and re-sends the final under the same `turn_id` with the ticket) — and the app

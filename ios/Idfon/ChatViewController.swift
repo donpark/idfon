@@ -1446,8 +1446,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                             LiveCall.shared.dial(target, show: show)
                         }),
                     animated: true)
-            case .callTranscript(let transcript):
-                replayTapped(message: message, transcript: transcript)
+            case .callTranscript:
+                replayMessage(message)
+            case .text where !message.outgoing:
+                replayMessage(message)
             case .recording(let ticket, _, let localURL):
                 toggleRecording(messageID: message.id, ticket: ticket, localURL: localURL)
             case .file(let ticket, let name, _, let localURL):
@@ -1465,66 +1467,125 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
     }
 
-    /// #202 P0: tap a spoken bubble to hear it — its exact audio when one is
-    /// stored (P1/P2), else re-synthesized in the contact's on-device voice.
-    /// Tap again to stop. Notices ride the call-status line.
-    private func replayTapped(message: ChatMessage, transcript: CallTranscript,
-                              mode: BubbleReplay.Mode = .auto) {
+    /// #202: replay an agent message — its exact audio when the turn stored
+    /// any (spoken turns), else re-synthesized in the agent's voice. Tap
+    /// again to stop. Notices ride the call-status line.
+    private func replayMessage(_ message: ChatMessage, mode: BubbleReplay.Mode = .auto) {
+        let role: String, text: String, final: Bool, turnID: String, ticket: String?
+        switch message.kind {
+        case .callTranscript(let transcript):
+            role = transcript.role
+            text = transcript.text
+            final = transcript.final
+            turnID = transcript.turnId
+            ticket = transcript.audioTicket
+        case .text(let body):
+            role = "agent"
+            text = body
+            final = true
+            turnID = message.id
+            ticket = nil
+        default:
+            return
+        }
         let action = BubbleReplay.shared.tap(
-            messageID: message.id, role: transcript.role, text: transcript.text,
-            final: transcript.final, peerID: message.peerId,
-            callActive: LiveCall.shared.state != .idle,
-            turnID: transcript.turnId, ticket: transcript.audioTicket, mode: mode)
+            messageID: message.id, role: role, text: text, final: final,
+            peerID: message.peerId, callActive: LiveCall.shared.state != .idle,
+            turnID: turnID, ticket: ticket, mode: mode)
         if case .notice(let text) = action { CallFeedback.post(text) }
     }
 
     /// #202 long-press options: exact vs re-synthesized playback, and the
-    /// replay voice (the P3 opt-in: a caller turn with no stored original
-    /// replays in this voice — the user's clone — and says so).
+    /// agent's voice (per-contact, used to re-synthesize its messages; a
+    /// caller turn keeps the separate clone-voice opt-in).
     @objc private func bubbleLongPressed(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         let point = gesture.location(in: tableView)
         guard let indexPath = tableView.indexPathForRow(at: point),
-              case .message(let message) = timelineItems[indexPath.row],
-              case .callTranscript(let transcript) = message.kind,
-              transcript.final, !transcript.text.isEmpty
-        else { return }
-        let hasAudio = BubbleReplay.shared.hasAudio(turnID: transcript.turnId, ticket: transcript.audioTicket)
-        let sheet = UIAlertController(title: "Replay this turn", message: nil, preferredStyle: .actionSheet)
+              case .message(let message) = timelineItems[indexPath.row] else { return }
+        let role: String, text: String, final: Bool, turnID: String, ticket: String?
+        switch message.kind {
+        case .callTranscript(let transcript):
+            role = transcript.role
+            text = transcript.text
+            final = transcript.final
+            turnID = transcript.turnId
+            ticket = transcript.audioTicket
+        case .text(let body) where !message.outgoing:
+            role = "agent"
+            text = body
+            final = true
+            turnID = message.id
+            ticket = nil
+        default:
+            return
+        }
+        guard final, !text.isEmpty else { return }
+        let hasAudio = BubbleReplay.shared.hasAudio(turnID: turnID, ticket: ticket)
+        let isAgent = role == "agent"
+        let sheet = UIAlertController(title: "Replay this message", message: nil, preferredStyle: .actionSheet)
         if hasAudio {
             sheet.addAction(UIAlertAction(title: "Play Original Audio", style: .default) { [weak self] _ in
-                self?.replayTapped(message: message, transcript: transcript, mode: .exact)
+                self?.replayMessage(message, mode: .exact)
             })
         }
-        if transcript.role == "agent" || BubbleReplay.shared.voice != nil {
+        if isAgent || BubbleReplay.shared.voice != nil {
             sheet.addAction(UIAlertAction(title: "Play Re-synthesized", style: .default) { [weak self] _ in
-                self?.replayTapped(message: message, transcript: transcript, mode: .synth)
+                self?.replayMessage(message, mode: .synth)
             })
         }
-        sheet.addAction(UIAlertAction(title: "Replay Voice…", style: .default) { [weak self] _ in
-            self?.presentVoicePicker(message: message, transcript: transcript, from: point)
-        })
+        if isAgent {
+            sheet.addAction(UIAlertAction(title: "Agent Voice…", style: .default) { [weak self] _ in
+                self?.presentAgentVoicePicker(message: message, from: point)
+            })
+        } else {
+            sheet.addAction(UIAlertAction(title: "My Voice…", style: .default) { [weak self] _ in
+                self?.presentMyVoicePicker(message: message, from: point)
+            })
+        }
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         sheet.popoverPresentationController?.sourceView = tableView
         sheet.popoverPresentationController?.sourceRect = CGRect(origin: point, size: .zero)
         present(sheet, animated: true)
     }
 
-    /// #202 P3: pick the replay voice — the explicit opt-in for cloned-voice
-    /// replay of the user's own turns, and the voice for re-synthesis.
-    private func presentVoicePicker(message: ChatMessage, transcript: CallTranscript, from point: CGPoint) {
+    /// #202: the agent's voice — the voice used to re-synthesize this
+    /// contact's messages on replay (per-contact until runtime voice
+    /// generation lands, docs/voice-samples.md). Exact audio, when stored,
+    /// always plays first.
+    private func presentAgentVoicePicker(message: ChatMessage, from point: CGPoint) {
+        let sheet = UIAlertController(title: "Agent Voice", message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Default", style: .default) { [weak self] _ in
+            ContactVoice.set(nil, for: message.peerId)
+            self?.replayMessage(message, mode: .synth)
+        })
+        for name in PhononVoices.names() {
+            sheet.addAction(UIAlertAction(title: name, style: .default) { [weak self] _ in
+                ContactVoice.set(name, for: message.peerId)
+                self?.replayMessage(message, mode: .synth)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = tableView
+        sheet.popoverPresentationController?.sourceRect = CGRect(origin: point, size: .zero)
+        present(sheet, animated: true)
+    }
+
+    /// #202 P3 (later features): the clone-voice opt-in for the user's own
+    /// turns when no original is stored.
+    private func presentMyVoicePicker(message: ChatMessage, from point: CGPoint) {
         let sheet = UIAlertController(
-            title: "Replay Voice",
+            title: "My Voice",
             message: "A clone voice replays your own turns when no original is stored. Use only a voice made from your own voice or one you have consent to use — it plays on device.",
             preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Contact's Voice (default)", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "Off (no substitution)", style: .default) { [weak self] _ in
             BubbleReplay.shared.voice = nil
-            self?.replayTapped(message: message, transcript: transcript, mode: .synth)
+            self?.replayMessage(message, mode: .synth)
         })
         for name in PhononVoices.names() {
             sheet.addAction(UIAlertAction(title: name, style: .default) { [weak self] _ in
                 BubbleReplay.shared.voice = name
-                self?.replayTapped(message: message, transcript: transcript, mode: .synth)
+                self?.replayMessage(message, mode: .synth)
             })
         }
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
@@ -2025,7 +2086,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
             cell.setSender(senderHeader(for: message))
             cell.messageLabel.text = text
-            cell.captionLabel.text = caption(message.outgoing ? "typed · sent" : "typed", for: message)
+            cell.captionLabel.text = caption(
+                BubbleReplay.shared.isReading(message.id)
+                    ? "Reading…" : (message.outgoing ? "typed · sent" : "typed"),
+                for: message)
             cell.setAlignment(outgoing: side(for: message))
             return cell
         case .callTranscript(let transcript):
