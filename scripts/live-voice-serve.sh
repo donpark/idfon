@@ -33,6 +33,28 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
 agent="${EVE_AGENT:-llm}"
+# EVE_INSTANCE keys the contact's identity/home/ports. `auto` derives a slug
+# from the contact/model so contacts get stable, readable instance names
+# instead of ad-hoc ones; unset keeps the agent name.
+instance="${EVE_INSTANCE:-$agent}"
+if [ "$instance" = auto ]; then
+  slug_source="${EVE_CONTACT_NAME:-${EVE_IDFON_MODEL:-$agent}}"
+  instance=$(printf '%s' "$slug_source" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+  [ -n "$instance" ] || instance="$agent"
+fi
+home="${EVE_VOICE_HOME:-$HOME/.idfon/$instance}"
+# Reuse a named instance's saved launch profile on restart. It is trusted shell
+# config owned by this local account and is authoritative for that instance.
+instance_env="$home/instance.env"
+if [ -r "$instance_env" ]; then
+  . "$instance_env"
+  agent="${EVE_AGENT:-$agent}"
+  instance="${EVE_INSTANCE:-$instance}"
+  home="${EVE_VOICE_HOME:-$HOME/.idfon/$instance}"
+fi
+contact_name="${EVE_CONTACT_NAME:-$instance}"
+mkdir -p "$home"
 # Live config: the agent's own, or an override for a provider tryout
 # (scripts/voice-serve.sh passes EVE_LIVE_CONFIG). Resolved and validated up
 # front: an explicitly configured live config that does not exist is an
@@ -47,19 +69,6 @@ fi
 if [ -f "$live_config_path" ]; then
   live_args=(--live-config "$live_config_path")
 fi
-# EVE_INSTANCE keys the contact's identity/home/ports. `auto` derives a slug
-# from the contact/model so contacts get stable, readable instance names
-# instead of ad-hoc ones; unset keeps the agent name.
-instance="${EVE_INSTANCE:-$agent}"
-if [ "$instance" = auto ]; then
-  slug_source="${EVE_CONTACT_NAME:-${EVE_IDFON_MODEL:-$agent}}"
-  instance=$(printf '%s' "$slug_source" | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-  [ -n "$instance" ] || instance="$agent"
-fi
-contact_name="${EVE_CONTACT_NAME:-$instance}"
-home="${EVE_VOICE_HOME:-$HOME/.idfon/$instance}"
-mkdir -p "$home"
 # Pin the holder's UDP port so its endpoint address survives restarts and the
 # apps do not need re-pairing. Deterministic per agent, persisted, overridable.
 port_file="$home/endpoint-port"

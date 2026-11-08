@@ -83,8 +83,9 @@ turns every setting into a control and commits on **Save** in one go (Cancel
 discards) — one save path, nothing applies mid-edit.
 
 Settings are **pickers only** — no status rows. Each picker names what is
-active itself: it shows the effective value (the stored pick, else the app
-default), never "Automatic".
+active itself: a stored pick wins; otherwise client-owned halves use the app
+default and server-owned halves show the advertised agent default (or "Agent
+default (remote)" when the holder does not identify it).
 
 | picker | what it chooses |
 | --- | --- |

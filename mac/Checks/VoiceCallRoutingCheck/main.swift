@@ -16,6 +16,7 @@ func isLive(_ decision: VoiceCallDecision) -> Bool { if case .live = decision { 
 // `CapabilityTickets` names `AnyEncodable` only in `ticket(for:)` (the real one
 // lives in DaemonClient.swift); a stub keeps this check host-only.
 struct AnyEncodable: Decodable {
+    init(_ value: Any) {}
     init(from decoder: Decoder) throws {}
 }
 
@@ -58,6 +59,18 @@ check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: n
 // the silent video-call fallback.
 check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: nil, holderTicket: true, legacyRemote: false) == .onDevice,
       "no voice block + holder ticket -> on-device")
+
+// Contact speech defaults follow who owns each signed route half.
+let speechDefault = ContactSpeech.defaultChoice(
+    slot: .recognition, route: route(.serverCascade), catalog: [serverStt],
+    localId: "nemotron", localTitle: "Nemotron Streaming")
+check(speechDefault == SpeechChoice(store: .agentDefault, id: "agent-default", title: "Agent default — deepgram:nova-3"),
+      "server-owned speech shows the advertised agent engine")
+let clientSpeechDefault = ContactSpeech.defaultChoice(
+    slot: .recognition, route: route(.clientCascade), catalog: [serverStt],
+    localId: "nemotron", localTitle: "Nemotron Streaming")
+check(clientSpeechDefault == SpeechChoice(store: .onDevice, id: "nemotron", title: "Nemotron Streaming"),
+      "client-owned speech shows the on-device engine")
 
 // A server or full-duplex selection means the holder terminates audio.
 check(isLive(VoiceCallRouting.decide(selection: ("deepgram:nova-3", nil), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false)),
@@ -108,6 +121,9 @@ check(ContactSpeech.stored(for: peer, slot: .generation) == SpeechChoice(store: 
 // nil clears both stores for the half.
 ContactSpeech.set(nil, catalog: catalog, for: peer, slot: .generation)
 check(ContactSpeech.stored(for: peer, slot: .generation) == nil, "nil clears the pick")
+ContactSpeech.set(speechDefault, catalog: catalog, for: peer, slot: .recognition)
+check(ContactSpeech.stored(for: peer, slot: .recognition) == nil,
+      "choosing agent default clears the stored override")
 ContactVoiceSelection.remove(for: peer)
 ContactOnDeviceEngines.remove(for: peer)
 

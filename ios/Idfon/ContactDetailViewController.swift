@@ -373,22 +373,29 @@ final class ContactDetailViewController: UIViewController {
         let advertised = catalog
             .filter { $0.kind == kind || $0.fillsBothSlots }
             .map { SpeechChoice(store: .catalog, id: $0.id, title: $0.label) }
-        return onDevice + advertised
+        let agentDefault = ContactSpeech.defaultChoice(
+            slot: slot, route: CapabilityTickets.voiceRoute(for: peerID), catalog: catalog,
+            localId: slot == .recognition ? SpeechEngines.asrBackend.rawValue : SpeechEngines.backend.rawValue,
+            localTitle: slot == .recognition ? SpeechEngines.asrBackend.title : SpeechEngines.backend.title)
+        return onDevice + advertised + (agentDefault.store == .agentDefault ? [agentDefault] : [])
     }
 
     private func effective(_ slot: SpeechSlot) -> SpeechChoice {
         let stored = slot == .recognition ? draft.stt : draft.tts
-        if let stored { return stored }
-        return SpeechChoice(
-            store: .onDevice,
-            id: slot == .recognition ? SpeechEngines.asrBackend.rawValue : SpeechEngines.backend.rawValue,
-            title: "")
+        return stored ?? ContactSpeech.defaultChoice(
+            slot: slot, route: CapabilityTickets.voiceRoute(for: peerID), catalog: catalog,
+            localId: slot == .recognition ? SpeechEngines.asrBackend.rawValue : SpeechEngines.backend.rawValue,
+            localTitle: slot == .recognition ? SpeechEngines.asrBackend.title : SpeechEngines.backend.title)
     }
 
     private func speechTitle(_ slot: SpeechSlot) -> String {
         let effective = effective(slot)
-        return choices(for: slot).first { $0.store == effective.store && $0.id == effective.id }?.title
-            ?? (slot == .recognition ? SpeechEngines.asrBackend.title : SpeechEngines.backend.title)
+        if let choice = choices(for: slot).first(where: { $0.store == effective.store && $0.id == effective.id }) {
+            return choice.title
+        }
+        if !effective.title.isEmpty { return effective.title }
+        return effective.store == .catalog ? "Agent option unavailable"
+            : (slot == .recognition ? SpeechEngines.asrBackend.title : SpeechEngines.backend.title)
     }
 
     private func rebuildSpeech() {

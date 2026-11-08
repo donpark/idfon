@@ -15,6 +15,8 @@ add or materially change a doc, update the index.
 
 ## Checks
 
+- **Verify before retrying.** For network, device, or model checks, keep the returned operation ID and inspect that operation and its events before sending again. Reusing an idempotency key returns the existing operation; it does not re-run it. A new key creates a new request and may create another model turn.
+- **MAST repeat/contradiction warning.** Stop and reconcile the latest tool result with the current process/config state before taking another action. Do not repeat the last command; state what evidence changed or switch to a read-only check.
 - **One iPhone, several threads.** Install and launch through `ios/device.sh`,
   or wrap any `devicectl` command with `scripts/device-lock.sh <cmd>`. Both take
   one machine-wide lock (`/tmp/idfon-iphone.lock`), so two threads cannot

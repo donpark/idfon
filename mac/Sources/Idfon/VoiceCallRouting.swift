@@ -311,7 +311,7 @@ enum SpeechSlot { case recognition, generation }
 /// One entry in a contact's unified Speech picker: an on-device backend or an
 /// agent-catalog option. `id` is the store key (backend raw value or option id).
 struct SpeechChoice: Equatable {
-    enum Store: Equatable { case onDevice, catalog }
+    enum Store: Equatable { case onDevice, catalog, agentDefault }
     let store: Store
     let id: String
     let title: String
@@ -319,8 +319,18 @@ struct SpeechChoice: Equatable {
 
 /// Unified read/write over the two per-contact stores (`ContactOnDeviceEngines`
 /// and `ContactVoiceSelection`) so one Recognition/Generation picker spans both.
-/// `nil` from `stored` means neither store has a pick: the app default is used.
+/// When there is no stored pick, the signed route owns the default engine.
 enum ContactSpeech {
+    static func defaultChoice(slot: SpeechSlot, route: VoiceRoute?, catalog: [VoiceOption],
+                              localId: String, localTitle: String) -> SpeechChoice {
+        let remote = slot == .recognition ? route?.sttSide == .server : route?.ttsSide == .server
+        guard remote else { return SpeechChoice(store: .onDevice, id: localId, title: localTitle) }
+        let kind: VoiceOption.Kind = slot == .recognition ? .stt : .tts
+        let defaults = catalog.filter { ($0.kind == kind || $0.fillsBothSlots) && $0.side == .server }
+        let title = defaults.count == 1 ? "Agent default — \(defaults[0].label)" : "Agent default (remote)"
+        return SpeechChoice(store: .agentDefault, id: "agent-default", title: title)
+    }
+
     static func stored(for peerID: String, slot: SpeechSlot) -> SpeechChoice? {
         if let backend = ContactOnDeviceEngines.value(for: peerID, slot: slot) {
             return SpeechChoice(store: .onDevice, id: backend, title: "")
@@ -340,6 +350,9 @@ enum ContactSpeech {
             return
         }
         switch pick.store {
+        case .agentDefault:
+            ContactOnDeviceEngines.set(slot: slot, value: nil, for: peerID)
+            ContactVoiceSelection.set(slot: slot, value: nil, for: peerID)
         case .onDevice:
             ContactOnDeviceEngines.set(slot: slot, value: pick.id, for: peerID)
             ContactVoiceSelection.set(slot: slot, value: nil, for: peerID)

@@ -38,6 +38,34 @@ Most triage starts by joining one flow across processes. See
 - **OTLP (opt-in).** `IDFON_OTEL_ENDPOINT` on the holder/MCP/CLI exports spans;
   the daemon does not export by design.
 
+## Agent contact shows the wrong speech engines or does not answer (2026-11-08)
+
+A contact's display name is not its implementation. A contact can be a profile
+for an `llm` instance, with a model selected by `EVE_IDFON_MODEL` and a separate
+voice route selected by `EVE_LIVE_CONFIG`.
+
+Diagnose in this order:
+
+1. Match the app's peer ID to the holder identity (`~/.idfon/<instance>/holder.ticket`).
+   Do not infer the target from the contact label.
+2. Read the signed ticket route and any explicit per-contact speech picks. For
+   server-owned speech, the contact detail should show the holder's advertised
+   engines; on-device engines apply only to client-owned halves or explicit
+   client overrides.
+3. For a live holder, query its bridge `POST /voice/info`. `agent_model` is
+   the configured LLM; `engine` and `options` report the active STT/TTS path.
+   A successful `message.send` operation only proves delivery to the holder.
+   Check for `message.received` and the bridge's `forwarding to agent` /
+   `agent replied` lines to confirm the agent answered.
+4. For a failed send, inspect the existing operation ID and matching daemon
+   logs before retrying. Reusing `--idempotency-key` returns the same operation;
+   it does not run a new attempt. A new key creates another request and may
+   invoke the model again.
+5. Named instances load their saved shell profile from
+   `~/.idfon/<instance>/instance.env` on restart. Keep `EVE_INSTANCE` unchanged
+   to preserve the holder identity and endpoint port; set `EVE_AGENT`,
+   `EVE_IDFON_MODEL`, and `EVE_LIVE_CONFIG` there for the intended profile.
+
 **Side-channel variant (2026-10-04; corrected 2026-10-07).** The on-device
 client-cascade voice call (`VoiceAgentSession`) hit the same attenuation: with
 `.voiceChat` its TTS (Kokoro `AVAudioPlayer` / `AVSpeechSynthesizer`) was at

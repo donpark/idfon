@@ -61,9 +61,10 @@ re-pairing and the ticket stays small.
   pickers, **Recognition** (STT) and **Generation** (TTS). Each picker spans
   the app's on-device backends (`AsrBackend`/`TtsBackend`) and the agent's
   fetched `idfon.json` options; `ContactSpeech` reads/writes both stores behind
-  one pick. The displayed value is the effective engine (the stored pick, else
-  the app-global default — Parakeet for English STT, Apple Built-in for other
-  system languages), never "Automatic". Catalog
+  one pick. The displayed value is the effective engine: a stored pick wins;
+  otherwise client-owned halves use the app default and server-owned halves show
+  the advertised agent default (or "Agent default (remote)" if the holder does
+  not identify it). Catalog
   ids ride the `IDFON-LIVE/1` invite (`stt=<id>` / `tts=<id>`);
   `apply_voice_selection` resolves them on the holder into the cascade engine
   halves.

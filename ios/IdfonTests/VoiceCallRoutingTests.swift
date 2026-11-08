@@ -27,6 +27,29 @@ final class VoiceCallRoutingTests: XCTestCase {
             .onDevice)
     }
 
+    func testSpeechDefaultsFollowSignedRouteAndAdvertisedServerEngine() {
+        let deepgram = VoiceOption(json: [
+            "id": "deepgram:nova-3", "kind": "stt", "label": "Deepgram Nova-3", "side": "server",
+        ])!
+        XCTAssertEqual(
+            ContactSpeech.defaultChoice(slot: .recognition, route: route(.serverCascade), catalog: [deepgram],
+                                        localId: "nemotron", localTitle: "Nemotron Streaming"),
+            SpeechChoice(store: .agentDefault, id: "agent-default", title: "Agent default — Deepgram Nova-3"))
+        XCTAssertEqual(
+            ContactSpeech.defaultChoice(slot: .recognition, route: route(.clientCascade), catalog: [deepgram],
+                                        localId: "nemotron", localTitle: "Nemotron Streaming"),
+            SpeechChoice(store: .onDevice, id: "nemotron", title: "Nemotron Streaming"))
+        let peer = "test-agent-default-\(UUID().uuidString)"
+        ContactOnDeviceEngines.set(slot: .recognition, value: "nemotron", for: peer)
+        ContactSpeech.set(
+            ContactSpeech.defaultChoice(slot: .recognition, route: route(.serverCascade), catalog: [deepgram],
+                                         localId: "nemotron", localTitle: "Nemotron Streaming"),
+            catalog: [deepgram], for: peer, slot: .recognition)
+        XCTAssertNil(ContactSpeech.stored(for: peer, slot: .recognition), "choosing agent default clears the override")
+        ContactOnDeviceEngines.remove(for: peer)
+        ContactVoiceSelection.remove(for: peer)
+    }
+
     func testClientCascadeWithOnDevicePicksStaysOnDevice() {
         XCTAssertEqual(
             VoiceCallRouting.decide(selection: (stt: nil, tts: nil),
