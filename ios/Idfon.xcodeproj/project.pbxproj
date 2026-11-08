@@ -446,10 +446,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/donpark/FluidAudio";
+			repositoryURL = "https://github.com/FluidInference/FluidAudio";
 			requirement = {
-				kind = revision;
-				revision = 2ad9b4225769a9f644cee1995809918fb0fe2d27;
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.18.3;
 			};
 		};
 		54D511937386577BC39C56B1 /* XCRemoteSwiftPackageReference "xn-ptts" */ = {

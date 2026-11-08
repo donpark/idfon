@@ -5,11 +5,11 @@ let package = Package(
     name: "AsrTapLatency",
     platforms: [.macOS("15.0")],
     dependencies: [
-        // The same fork/branch both apps pin for the tap consumer
-        // (`mac/Package.resolved`: donpark/FluidAudio @ encoder-output-callback).
-        // Pinned by revision so the probe builds offline and cannot drift.
-        .package(url: "https://github.com/donpark/FluidAudio",
-                 revision: "2ad9b4225769a9f644cee1995809918fb0fe2d27",
+        // Same upstream pin the apps use (v0.18.3, which ships #1109's
+        // `setEncoderOutputCallback`). Pinned by revision so the probe builds
+        // offline and cannot drift.
+        .package(url: "https://github.com/FluidInference/FluidAudio",
+                 revision: "c8b41f98eae668794dd0083bbe028fe7e6585051",
                  traits: []),  // ASR only: no TTS, diarizer or text-normalizer engine
     ],
     targets: [
