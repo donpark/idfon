@@ -218,7 +218,8 @@ the download budget far better than 0.6B. A wins by construction on parity
   **text + token timings only — no L15 embedding tap**. Options:
   1. thin raw-encoder runner over the CoreML Nemotron encoder bundle (the
      Parakeet-tap pattern in `ParakeetStudentTurnModel`),
-  2. upstream a feature tap into FluidAudio,
+  2. upstream a feature tap into FluidAudio (**done** — FluidAudio #1109, merged and
+     released in v0.18.3 on 2026-11-07),
   3. reuse the tyger-models `front→L15` encoder tier (pack format exists).
 - Spike (B): same pattern over `streaming_encoder.mlmodelc`; then the
   retrain-and-gate loop.

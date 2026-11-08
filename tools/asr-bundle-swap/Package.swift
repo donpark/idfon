@@ -5,10 +5,10 @@ let package = Package(
     name: "AsrBundleSwap",
     platforms: [.macOS("15.0")],
     dependencies: [
-        // The same fork/revision the apps and `tools/asr-tap-latency` pin, so the
-        // managers under test are the ones that ship.
-        .package(url: "https://github.com/donpark/FluidAudio",
-                 revision: "2ad9b4225769a9f644cee1995809918fb0fe2d27",
+        // Same upstream pin the apps and `tools/asr-tap-latency` use (v0.18.3),
+        // so the managers under test are the ones that ship.
+        .package(url: "https://github.com/FluidInference/FluidAudio",
+                 revision: "c8b41f98eae668794dd0083bbe028fe7e6585051",
                  traits: []),
     ],
     targets: [

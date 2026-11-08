@@ -44,7 +44,7 @@ the iOS link args.
 | `crates/iroh-c-ffi/src/*` | the c-ffi artifact, then every consumer that links it: cli, mac, native, ios (staticlib) |
 | `crates/idfond` (daemon) | `pnpm cli build`, `pnpm mac build`, `pnpm native build` (all bundle `idfond`) |
 | `crates/idfon-cli` (CLI binary) | `pnpm cli build` |
-| Apple SwiftPM pins (`ios/Idfon.xcodeproj/…/swiftpm/Package.resolved`, `mac/Package.swift` + `Package.resolved`) | **both** `pnpm ios build` and `pnpm mac build` — the two resolve independently, so one succeeding proves nothing about the other. FluidAudio is the fork `donpark/FluidAudio` branch `encoder-output-callback` until upstream #1109 merges; tag `idfon-tap-pin-1` is the resolution this repo was verified against — a release build should pin that tag, not the moving branch. |
+| Apple SwiftPM pins (`ios/Idfon.xcodeproj/…/swiftpm/Package.resolved`, `mac/Package.swift` + `Package.resolved`) | **both** `pnpm ios build` and `pnpm mac build` — the two resolve independently, so one succeeding proves nothing about the other. FluidAudio is `FluidInference/FluidAudio` `.upToNextMinor(0.18.3)` in all Apple pins (`mac/`, `ios/`, `mac/Idfon.xcodeproj`); `tools/asr-tap-latency` and `tools/asr-bundle-swap` pin the v0.18.3 revision (`c8b41f98`) so they build offline. v0.18.3 ships upstream #1109 (`setEncoderOutputCallback`, the tap path); the `donpark/FluidAudio` fork is retired. |
 | `ios/Idfon/*` (Swift) | `pnpm ios build` |
 | `mac/Sources/*` (Swift) | `pnpm mac build`, or `mac/Idfon.xcodeproj` (same sources; run-script phases build + embed the Rust deps) |
 | `native/src/*`, `native/build.zig`, `native/app.json` | `pnpm native build` |
