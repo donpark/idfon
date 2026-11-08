@@ -29,6 +29,19 @@ timestamps per speaker on separate channels; this dataset derives the turn
 boundaries and events from those timestamps and gates them on the audio's own
 channel dominance.
 
+## Read this first
+
+**This is an evaluation set, not a training set.** The labels are
+transcript-derived and gated on the audio. A detector trained on them learns the
+label's coverage, not turn-taking; the labels are valid positives and noisy
+negatives. Use them to score a detector, not to fit one blindly.
+
+**The public 16 are imbalanced.** 1,159 of the 1,716 rows are `overlap` (67%),
+so the set is strongest as a barge-in / hard-negative benchmark. It contains
+exactly **1 `backchannel` row** — too few to train or evaluate backchannel
+detection. The full gated set (161,432 ranges) has 407 backchannels; use that if
+you need them.
+
 ## What is here
 
 | File | Rows | What it is |
@@ -37,6 +50,9 @@ channel dominance.
 | `manifest.csv` | 1,716 | the same rows flattened |
 | `validation.json` | — | row/conversation/kind counts |
 | `SHA256SUMS` | — | checksums of the two data files |
+| `data/turn-annotations.jsonl` | 14,992 | the v0.1 pilot slice's per-frame records (see Prior artifact) |
+| `manifest.json` | — | the v0.1 pilot slice's provenance |
+| `human-audit-openyap.csv` | 75 | the v0.1 pilot slice's human audit |
 
 Every row names the source conversation and a 6 s clip window. A reader with the
 public audio re-cuts the same range locally; the audio never leaves the source.
@@ -176,6 +192,18 @@ with the same attribution. **No audio is included or redistributed here.**
 The annotations are ours: the event derivation, the two quality gates and the
 channel normalisation. If you use this dataset, cite the source and this set
 (see `NOTICE.md`).
+
+## Prior artifact (v0.1 pilot slice)
+
+The repo also holds an earlier artifact: 14,992 per-frame `IDFON-VOICE-DECISION/1`
+records over 20 minutes of 4 public conversations (`data/turn-annotations.jsonl`),
+with `manifest.json` and a 75-item `human-audit-openyap.csv`. Those are Tyger
+**teacher pseudo-labels**, not human ground truth — do not report agreement with
+them as accuracy. They are for distillation and schema prototyping. Its README
+is in the repo's git history (`0098b802`).
+
+The turn ranges above are the human-auditable artifact; the pilot is the
+per-frame teacher artifact. They are complementary, not duplicates.
 
 ## Composition
 
