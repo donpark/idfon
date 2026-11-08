@@ -852,7 +852,9 @@ real `decoder`, `joint`, `decoder_joint`, `tokenizer.json`, `metadata.json`), wi
 `encoder/encoder_int8.mlmodelc` replaced by the **corrected 42/13 int8 tap export**
 (`bench-results/asr-tap-fixed/encoder_tap_42-13_fp16_int8w.mlpackage`, the post-mask-fix
 one — not the 56/0 reference pass the offline harness needed). Fork pin
-`donpark/FluidAudio@2ad9b422` (`encoder-output-callback`), `cpuAndNeuralEngine`, macOS
+`donpark/FluidAudio@2ad9b422` (`encoder-output-callback`; retired 2026-11-07 — the fork
+branch is deleted, tag `idfon-tap-pin-1` preserves `2ad9b422` for exact reproduction, and
+the probe now builds against upstream `FluidInference/FluidAudio` v0.18.3), `cpuAndNeuralEngine`, macOS
 27.2 / M4 Pro / load average ~5. Same three captures and the same frame counts as the
 offline run; the tap path is **mic channel only** (the manager is mono; the offline
 harness encoded both ears, so it charged ~2x the encode time this path pays).
@@ -937,7 +939,10 @@ around them *without* touching the fork, the app or a weight):
 3. **`tapFrameOrigin` survives `reset()`** (only `cleanup()` clears it): origins 0 → 1400 →
    2520 across three `reset()`-separated sessions, step exactly 7. The app calls
    `manager.reset()` on every utterance commit, so a consumer must carry its own baseline
-   origin or the fork should reset it with the rest of the session state.
+   origin or the fork should reset it with the rest of the session state. **Fixed
+   upstream in v0.18.3** (merged #1109): the callback passes `absoluteFrameBase`, which
+   `reset()` zeroes and which matches `TokenTiming`'s frame base — no consumer baseline
+   needed. The measurement above is kept as recorded (fork pin `2ad9b422`).
 
 **What this does not measure.** iPhone ANE scheduling and thermals (this is an M4 Pro with
 the shipping decoder; the encode is ~9 ms/chunk here and the phone is unmeasured) · the
@@ -1857,7 +1862,9 @@ Three distinct failures, all real:
    and it is the *cold* row — its cosine to its own neighbour is 0.37 when the restart
    lands in silence (zero pre-context) and 0.95 mid-speech.
 3. **Frame-origin drift — the wiring bug.** `tapFrameOrigin` survives `reset()` in the
-   fork (0 → 1400 → 2520, #174), so a consumer must rebase per stream start. Even with
+   fork (0 → 1400 → 2520, #174), so a consumer must rebase per stream start (the
+   survives-`reset()` accumulation is fixed upstream in v0.18.3 — see blocker 3 in the
+   delivery probe's list — but the per-restart drift below is structural and remains). Even with
    silence fed continuously, the extra context row per restart advances the origin by 8
    rows per 7 frames of audio: **+1 frame per restart, cumulative** (+16 frames = 1.28 s
    by the end of the longest session). If playback audio is only fed while the agent is
@@ -2386,7 +2393,9 @@ ships:
    frame grid was verified equal to the windowed reference (offset 0/0, tail trimmed).
    A windowed re-encode (`l4-windowed`) is a different adapter with its own fit.
 2. The ASR's own encoder must **expose** the tap (encoder re-export with a declared tap
-   output + FluidAudio #1109's output callback). Until then the shipped tier carries the
+   output + FluidAudio's encoder-output callback). The callback side is **done**: it
+   upstreamed as #1109 and ships in v0.18.3; the re-export is ours. Until the re-export
+   ships, the shipped tier carries the
    private L4 cut and pays the duplicate pass; the numbers above are the step only
    (1.75 MB, ≈0.2–1.0 ms/frame on a Mac), and the epic's bar stays **unmet**.
 3. A per-hop runtime timeline must show **one** encoder invocation per ASR hop. TurnShadow
