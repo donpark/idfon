@@ -40,6 +40,7 @@ def level_db(path: str, mark_s: float) -> tuple[float, float]:
 
 def main() -> None:
     d = sys.argv[1] if len(sys.argv) > 1 else "."
+    blind = "--blind" in sys.argv  # hide the kind label so the row is a blind guess
     path = os.path.join(d, "manifest.csv")
     rows = list(csv.DictReader(open(path)))
     for r in rows:
@@ -61,34 +62,39 @@ def main() -> None:
               "Turn ranges — " if turn else "Barge audit — ")
              + os.path.basename(os.path.abspath(d)))
     if turn:
-        header_q = ("At the mark, <b>is the labelled event the right one</b> — a handoff, a "
-                    "silent tail, an overlap, or a backchannel? The clip starts just before the "
-                    "ender's last words; the mark is the turn end (shown per row).")
+        header_q = ("At the mark, <b>is the caller still talking</b> — did they give a reasonable "
+                    "signal to continue, or did they actually give up the floor? The clip starts just "
+                    "before the ender's last words; the mark is the turn end (shown per row).")
         header_sub = ("6 s stereo clip, turn ender left / party taking the floor right; the ender "
-                      "stops shortly after the clip starts. Keys: <b>Y</b> yes, <b>N</b> no, "
-                      "<b>space</b> play/pause, <b>J</b>/<b>K</b> next/previous.")
+                      "stops shortly after the clip starts. Keys: <b>Y</b> yes (caller still talking), "
+                      "<b>N</b> no (caller gave up the floor), <b>space</b> play/pause, "
+                      "<b>J</b>/<b>K</b> next/previous.")
         rubric_html = """
   <section class="rubric">
     <div class="col yes">
-      <h2>Say <b>Yes</b> — the audio matches the labelled event</h2>
+      <h2>Say <b>Yes</b> — the caller is still talking</h2>
       <ul>
-        <li><b>handoff</b>: the turn ender stops and the other party starts within ~0.3 s</li>
-        <li><b>silent_tail</b>: the ender stops and the other party stays silent 0.3-1.2 s</li>
-        <li><b>overlap</b>: the other party starts <i>before</i> the ender stops</li>
-        <li><b>backchannel</b>: a short (&lt;0.3 s) acknowledgement inside the other's turn</li>
+        <li>the caller gave a reasonable signal to continue: a mid-turn pause, a breath, a filler</li>
+        <li>the "next" utterance is a short blip — a backchannel, an acknowledgement, a laugh — not a floor change</li>
+        <li>on a <b>backchannel</b> row: the caller blipped while you had the floor; a short acknowledgement (any form) is the right response</li>
+        <li>the caller's voice is still going at the mark, or the pause sits inside the turn</li>
+        <li>the caller has not finished; the next speaker is not really taking the floor</li>
       </ul>
     </div>
     <div class="col no">
-      <h2>Say <b>No</b> — the label is wrong for this audio</h2>
+      <h2>Say <b>No</b> — the caller gave up the floor</h2>
       <ul>
-        <li>the ender is still talking at the mark (the turn did not end)</li>
-        <li>the other party was already talking before the mark (not a handoff)</li>
-        <li>the "next speaker" is laughter, a cough, or noise, not a floor claim</li>
-        <li>the kind is wrong: this is a tail where the label says handoff, or vice versa</li>
+        <li><b>handoff</b>: the ender stops and the other party starts within ~0.3 s</li>
+        <li><b>silent_tail</b>: the ender stops and the other party stays silent 0.3-1.2 s</li>
+        <li><b>overlap</b>: the other party starts <i>before</i> the ender stops</li>
+        <li><b>backchannel</b>: a short acknowledgement inside the other's turn</li>
+        <li>the next turn is a real floor change — long and turn-shaped, not a blip</li>
       </ul>
     </div>
     <div class="tie">
-      <b>Tiebreak:</b> judge the event's own definition, not whether answering would be good.
+      <b>Tiebreak:</b> judge the caller's own intent, not the label's wording.
+      <b>Yes</b> = the caller is still talking (this is not a floor change).
+      <b>No</b> = the caller actually gave up the floor (the labelled event happened).
       Left channel = the turn ender, right = the party taking the floor. The mark sits at 1.2 s.
       Levels are shown after you vote.
     </div>
@@ -226,6 +232,8 @@ def main() -> None:
 <footer><span class="sub" id="hint">Verdicts save automatically in this browser.</span></footer>
 <script>
 const ROWS = {clips};
+const TURN = {str(turn).lower()};
+const BLIND = {str(blind).lower()};
 const KEY = "barge-audit:" + document.title;
 let votes = JSON.parse(localStorage.getItem(KEY) || "{{}}");
 const save = () => localStorage.setItem(KEY, JSON.stringify(votes));
@@ -249,20 +257,20 @@ function item(r, i) {{
   el.className = "item" + (v.verdict ? " done" : "");
   el.dataset.sample = r.sample_id;
   el.innerHTML = `
-    <div><div class="id">${{r.sample_id}}</div><div class="meta">${{i + 1}}/${{ROWS.length}}</div></div>
+    <div><div class="id">${{BLIND ? "clip " + (i + 1) : r.sample_id}}</div><div class="meta">${{i + 1}}/${{ROWS.length}}</div></div>
     <div>
       <div style="display:flex; gap:8px; align-items:center">
         <button class="play" title="play / pause (space)">▶</button>
         <audio controls preload="metadata" style="flex:1"
                src="${{r.clip}}"></audio>
       </div>
-      <div class="meta">mark ${{r.mark_s}} s · ${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s ?? r.mark)}} s into the call
-        <span class="reveal" data-reveal>· ${{detail(r)}}</span></div>
+      <div class="meta">mark ${{r.mark_s}} s · ${{BLIND ? "clip" : r.kind.toLowerCase()}} · ${{Math.round(r.ts_s ?? r.mark)}} s into the call
+        <span class="reveal" data-reveal>${{BLIND ? "" : "· " + detail(r)}}</span></div>
       ${{r.text ? `<div class="said">“${{r.text.replace(/</g, "&lt;")}}”</div>` : ""}}
     </div>
     <div class="votes">
-      <button data-v="yes" class="${{v.verdict === 'yes' ? 'on-yes' : ''}}" title="caller took the floor">Yes</button>
-      <button data-v="no" class="${{v.verdict === 'no' ? 'on-no' : ''}}" title="pause / noise / backchannel">No</button>
+      <button data-v="yes" class="${{v.verdict === 'yes' ? 'on-yes' : ''}}" title="${{TURN ? 'caller is still talking' : 'caller took the floor'}}">Yes</button>
+      <button data-v="no" class="${{v.verdict === 'no' ? 'on-no' : ''}}" title="${{TURN ? 'caller gave up the floor' : 'pause / noise / backchannel'}}">No</button>
     </div>
     <div class="notes"><input placeholder="note (optional)" value="${{v.notes ? v.notes.replace(/"/g, '&quot;') : ''}}"></div>`;
   const audio = el.querySelector("audio");
@@ -276,7 +284,10 @@ function item(r, i) {{
     audio.currentTime = 0;
     audio.play().catch(() => {{}});
   }});
-  audio.onplay = () => {{ play.textContent = "❚❚"; }};
+  audio.onplay = () => {{
+    document.querySelectorAll("audio").forEach((a) => {{ if (a !== audio) a.pause(); }});
+    play.textContent = "❚❚";
+  }};
   audio.onpause = () => {{ play.textContent = "▶"; }};
   audio.onerror = () => {{
     play.textContent = "!";
