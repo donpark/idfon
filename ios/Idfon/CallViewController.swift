@@ -186,6 +186,10 @@ final class CallViewController: UIViewController {
     }
     @objc private func answerTapped() { VideoCall.shared.answer() }
     @objc private func declineTapped() { VideoCall.shared.decline() }
-    /// Collapse to the inline chat video bar; the call keeps running.
-    @objc private func collapseTapped() { dismiss(animated: true) }
+    /// Collapse to the inline chat video bar; the call keeps running, and the
+    /// auto-open must not undo the user's choice for this call.
+    @objc private func collapseTapped() {
+        VideoCall.shared.suppressAutoPresent = true
+        dismiss(animated: true)
+    }
 }

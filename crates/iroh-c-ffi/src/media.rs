@@ -354,7 +354,8 @@ impl AudioCapture for ShellAudioCapture {
     }
 }
 
-/// Platform capture adapter: RGBA frames pushed by the shell via `media_video_push_frame`.
+/// Platform capture adapter: BGRA frames pushed by the shell via `media_video_push_frame`
+/// (`Idfon-Bridging.h`; CoreVideo's native capture order).
 struct ShellVideoCapture;
 
 impl VideoCapture for ShellVideoCapture {
@@ -1496,13 +1497,22 @@ pub fn media_live_unsubscribe() {
     SUB_KICK.store(false, Ordering::Relaxed);
     set_sub_state(SUB_IDLE);
 }
+/// CoreVideo capture is BGRA; `Surface::rgba` reads red first. Feeding BGRA
+/// straight in swaps red and blue, which encodes as blue skin on the wire.
+fn bgra_to_rgba(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+}
+
 #[ffi_export]
 pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
     if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 {
         return;
     }
-    let pixels =
+    let mut pixels =
         unsafe { std::slice::from_raw_parts(data, width as usize * height as usize * 4) }.to_vec();
+    bgra_to_rgba(&mut pixels);
     let count = VIDEO_FRAMES_PUSHED.fetch_add(1, Ordering::Relaxed) + 1;
     if count <= 3 || count % 150 == 0 {
         eprintln!(
@@ -2092,6 +2102,14 @@ pub fn media_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::AudioCodec;
+
+    #[test]
+    fn pushed_capture_bytes_are_reordered_bgra_to_rgba() {
+        // CoreVideo hands the shells B,G,R,A; the encoder wants R,G,B,A.
+        let mut pixels = [10u8, 20, 30, 255, 1, 2, 3, 4];
+        super::bgra_to_rgba(&mut pixels);
+        assert_eq!(pixels, [30, 20, 10, 255, 3, 2, 1, 4]);
+    }
 
     #[test]
     fn voice_agent_profiles_are_supported_but_other_rates_are_not() {

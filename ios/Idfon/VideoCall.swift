@@ -188,10 +188,17 @@ final class VideoCall: NSObject {
     func setAudioEnabled(_ enabled: Bool) {
         audioEnabled = enabled
         // Capture comes up on demand: a video-only dial never started the mic.
+        // The call can end while the mic starts (remote stop): release it,
+        // since teardown has already run.
         if enabled && !AudioPusher.shared.running {
+            let epoch = life.epoch
             Task { [weak self] in
                 guard await AudioPusher.shared.startForCall() else { return }
-                self?.applySendState()
+                guard let self, self.life.epoch == epoch else {
+                    if self?.life.isBusy == false { AudioPusher.shared.stop() }
+                    return
+                }
+                self.applySendState()
             }
         }
         applySendState()
@@ -294,6 +301,12 @@ final class VideoCall: NSObject {
     private var frameTimer: Timer?
     /// True while a decoded peer frame is on screen (for clearing it).
     private var peerFrameVisible = false
+    /// The peer's video is arriving: the cue to take the screen with the
+    /// fullscreen call view instead of the chat's thumbnail strip.
+    var hasPeerFrame: Bool { peerFrameVisible }
+    /// Set when the user collapses the fullscreen view: that call stays
+    /// inline. Cleared when the call ends.
+    var suppressAutoPresent = false
 
     // MARK: - FFI wrappers (blocking C calls must leave the main thread)
 
@@ -337,6 +350,7 @@ final class VideoCall: NSObject {
     }
 
     private func dialNow(_ peerRef: String, audio: Bool, video: Bool, cameraOn: Bool) {
+        let epoch = life.epoch
         audioAvailable = true
         videoAvailable = true
         audioEnabled = audio
@@ -383,6 +397,12 @@ final class VideoCall: NSObject {
                         return
                     }
                 }
+                // A decline/remote stop can land while the mic starts; capture
+                // brought up after teardown would stay on for good.
+                guard life.epoch == epoch else {
+                    abandonLateStart()
+                    return
+                }
                 if video && cameraOn { CameraPusher.shared.start() }
                 // Publish both tracks regardless of the staged stream set so
                 // either stream can be toggled on later in the call. The
@@ -394,6 +414,10 @@ final class VideoCall: NSObject {
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
+                    return
+                }
+                guard life.epoch == epoch else {
+                    abandonLateStart()
                     return
                 }
                 published = true
@@ -436,6 +460,7 @@ final class VideoCall: NSObject {
         videoEnabled = cameraOn
         if case .incoming(let pending) = life.phase { callPeer = pending.peer }
         apply(.answer)
+        let epoch = life.epoch
         Task {
             do {
                 activateAudioSession()
@@ -452,8 +477,20 @@ final class VideoCall: NSObject {
                     fail("microphone unavailable")
                     return
                 }
+                // The call can end during the mic retry: teardown already
+                // ran, so release what this start brought up.
+                guard life.epoch == epoch else {
+                    abandonLateStart()
+                    return
+                }
                 if cameraOn { CameraPusher.shared.start() }
                 await join(ticket: pending.ticket, answered: false)
+                // `join` returns early when the call ended mid-subscribe, and
+                // every start below would then have no teardown left to run.
+                guard life.epoch == epoch else {
+                    abandonLateStart()
+                    return
+                }
                 let channels = AudioIO.captureChannelsForCall()
                 let own = await ffiString {
                     media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
@@ -461,6 +498,10 @@ final class VideoCall: NSObject {
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
+                    return
+                }
+                guard life.epoch == epoch else {
+                    abandonLateStart()
                     return
                 }
                 published = true
@@ -565,6 +606,17 @@ final class VideoCall: NSObject {
         notify()
     }
 
+    /// A start that finished after the call ended: release what it brought up.
+    /// Teardown already ran, so nothing else will.
+    private func abandonLateStart() {
+        // The epoch also moves when a successor call begins: that call owns
+        // the shared pushers now, and its own teardown must do the stopping.
+        guard !life.isBusy else { return }
+        AudioPusher.shared.stop()
+        CameraPusher.shared.stop()
+        Task.detached(priority: .userInitiated) { media_live_stop() }
+    }
+
     private func fail(_ message: String) {
         idfonError("idfon video call failed: \(message)")
         lastError = message
@@ -614,6 +666,7 @@ final class VideoCall: NSObject {
                 media_live_unsubscribe()
             }
             callPeer = nil
+            suppressAutoPresent = false
             published = false
             audioAvailable = false
             videoAvailable = false

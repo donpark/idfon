@@ -36,9 +36,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
         window?.rootViewController = tabs
         window?.makeKeyAndVisible()
 
-        // Forward decoded peer frames to the inline video surfaces.
-        VideoCall.shared.onFrame = { image in
+        // Forward decoded peer frames to the inline video surfaces; the first
+        // one also takes the screen (presentLiveVideoIfNeeded).
+        VideoCall.shared.onFrame = { [weak self] image in
             NotificationCenter.default.post(name: .idfonVideoFrame, object: image)
+            Task { @MainActor in self?.presentLiveVideoIfNeeded() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .idfonVideoChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.presentLiveVideoIfNeeded() }
         }
 
         connectionOptions.urlContexts.forEach(handleURL)
@@ -75,6 +82,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
                 chat.automateHealthCheck()
             }
         }
+    }
+
+    /// True once this call's fullscreen view was opened for us.
+    private var autoPresentedCall = false
+
+    /// Receiving video takes the screen: a live call with the peer's frames
+    /// shows the fullscreen call view, not the chat's thumbnail strip. The
+    /// chevron collapse opts that call out for good.
+    @MainActor
+    private func presentLiveVideoIfNeeded() {
+        let call = VideoCall.shared
+        guard call.state == .inCall else {
+            autoPresentedCall = false
+            return
+        }
+        guard call.hasPeerFrame, !call.suppressAutoPresent, !autoPresentedCall,
+              UIApplication.shared.applicationState == .active,
+              let presenter = window?.rootViewController,
+              presenter.presentedViewController == nil else { return }
+        autoPresentedCall = true
+        presenter.present(CallViewController(), animated: true)
     }
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {

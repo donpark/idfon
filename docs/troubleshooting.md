@@ -907,6 +907,36 @@ streams are dropped the thread exits and cpal closes the device. Next call
 re-creates the backend on demand. Safe to call while streams exist — the
 driver only exits when every strong sender is gone.
 
+## iOS live-call video: blue faces, thumbnail-only, camera/mic left on (2026-11-08, FIXED)
+
+**Symptom.** In an iOS camera call people looked cyan/blue ("Avatar natives"),
+the peer's picture appeared only in the chat's 180pt inline strip until tapped,
+and after hanging up the OS camera or mic indicator could stay lit.
+
+**Root causes.**
+
+1. **Colour.** Both shells capture `kCVPixelFormatType_32BGRA` (CoreVideo's
+   order, as `Idfon-Bridging.h` documents) but
+   `media_video_push_frame` wrapped the bytes with `Surface::rgba`, so red and
+   blue were exchanged before H.264 encoding — the swap was baked into the
+   bitstream for every receiver. Fixed in `crates/iroh-c-ffi/src/media.rs`
+   (`bgra_to_rgba` on push); the decoder/`to_rgba` side was already correct.
+2. **Fullscreen.** Only the inline bar could open `CallViewController` (on tap).
+   `SceneDelegate.presentLiveVideoIfNeeded` now presents it on the first peer
+   frame of a live call, for the whole app; the chevron collapse sets
+   `VideoCall.suppressAutoPresent` so the user's choice sticks for that call.
+3. **Capture left on.** Starts that completed *after* teardown had nothing left
+   to stop them: `dialNow`/`answer` kept going past a decline or remote stop
+   (mic, then camera, then a publish), and the on-demand mic start in
+   `setAudioEnabled` could land post-hangup. All three now check
+   `CallLifecycle.epoch` (the existing guard pattern) and release what they
+   started via `abandonLateStart()`.
+
+**Retest.** Device-only (`ios/device.sh`): colours match a mirror/photos app in
+both directions, answering a video call lands on the fullscreen view (collapse
+then reconnect stays inline), and ending a call mid-ring, mid-connect and
+mid-call leaves no green/orange indicator.
+
 ## Live-call agent voice cuts in and out / goes silent mid-call (2026-10-03, FIXED)
 
 **Symptom.** On an iOS live call to an agent, the agent's voice is
