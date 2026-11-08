@@ -930,12 +930,20 @@ and after hanging up the OS camera or mic indicator could stay lit.
    (mic, then camera, then a publish), and the on-demand mic start in
    `setAudioEnabled` could land post-hangup. All three now check
    `CallLifecycle.epoch` (the existing guard pattern) and release what they
-   started via `abandonLateStart()`.
+   started via `abandonLateStart()` (which stays out of a successor call).
+4. **Capture restarted itself.** In the device log, frames kept arriving after
+   a call ended and capture restarted nine minutes later: `CameraPusher.stop()`
+   only called `stopRunning()` when `isRunning` was true (false while the screen
+   lock had the session interrupted), and the interruption-end / deferred-start
+   paths could start it again with nothing left to stop them. The stop is now
+   unconditional and a lock-guarded `started` flag gates start, rebuild and
+   interruption restart.
 
 **Retest.** Device-only (`ios/device.sh`): colours match a mirror/photos app in
 both directions, answering a video call lands on the fullscreen view (collapse
 then reconnect stays inline), and ending a call mid-ring, mid-connect and
-mid-call leaves no green/orange indicator.
+mid-call — including while the screen is locked — leaves no green/orange
+indicator.
 
 ## Live-call agent voice cuts in and out / goes silent mid-call (2026-10-03, FIXED)
 

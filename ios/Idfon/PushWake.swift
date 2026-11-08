@@ -370,12 +370,19 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         let raw = try await client.request(method: "capability.ticket", params: [
             "capabilities": AnyEncodable([AnyEncodable("message.send")]),
         ])
-        guard let ticket = raw?["ticket"],
-              let data = try? JSONEncoder().encode(ticket),
-              let text = String(data: data, encoding: .utf8),
-              let parsed = RingTicket(json: text)
-        else {
+        guard let ticket = raw?["ticket"] else {
             idfonError("idfon push: capability.ticket returned no ticket")
+            return nil
+        }
+        // The daemon serializes an rcan ticket as its wire token (a JSON
+        // string); an older daemon sent the legacy JSON object. Encoding the
+        // string would wrap it in quotes and every parse would fail — the
+        // regression that silently stopped push registration and lock-screen
+        // rings.
+        let text = ticket.stringValue
+            ?? (try? JSONEncoder().encode(ticket)).flatMap { String(data: $0, encoding: .utf8) }
+        guard let text, let parsed = RingTicket(json: text) else {
+            idfonError("idfon push: capability.ticket unreadable")
             return nil
         }
         return parsed

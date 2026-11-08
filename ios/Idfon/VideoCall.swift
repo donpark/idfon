@@ -411,13 +411,15 @@ final class VideoCall: NSObject {
                 let ticket = await ffiString {
                     media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
                 }
+                // Checked before the failure branch: `fail` ends whichever call
+                // the machine holds now, and this publish belongs to a dead one.
+                guard life.epoch == epoch else {
+                    abandonLateStart()
+                    return
+                }
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
-                    return
-                }
-                guard life.epoch == epoch else {
-                    abandonLateStart()
                     return
                 }
                 published = true
@@ -495,13 +497,15 @@ final class VideoCall: NSObject {
                 let own = await ffiString {
                     media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
                 }
+                // Checked before the failure branch: `fail` ends whichever call
+                // the machine holds now, and this publish belongs to a dead one.
+                guard life.epoch == epoch else {
+                    abandonLateStart()
+                    return
+                }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
-                    return
-                }
-                guard life.epoch == epoch else {
-                    abandonLateStart()
                     return
                 }
                 published = true

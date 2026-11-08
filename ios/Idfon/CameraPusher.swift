@@ -26,6 +26,16 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     /// arbitration denies frames to non-active clients, so we defer.
     private var pendingStart = false
     private var restartAfterInterruption = false
+    /// Capture was requested and not yet stopped. The gate for every path
+    /// that would start the session again (interruption end, deferred
+    /// start): `stop()` must win even when a start is still in flight.
+    private var started = false
+    private let stateLock = NSLock()
+
+    private var isStarted: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return started }
+        set { stateLock.lock(); started = newValue; stateLock.unlock() }
+    }
     /// Set when the session reports a runtime error / interruption.
     private var lastSessionError = ""
     private var observers: [NSObjectProtocol] = []
@@ -48,7 +58,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             let reason = note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int ?? -1
             guard let self else { return }
             self.lastSessionError = "interrupted reason=\(reason)"
-            self.restartAfterInterruption = self.session.isRunning
+            self.restartAfterInterruption = self.isStarted && self.session.isRunning
             self.queue.async {
                 if self.session.isRunning { self.session.stopRunning() }
             }
@@ -57,7 +67,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         observers.append(NotificationCenter.default.addObserver(
             forName: AVCaptureSession.interruptionEndedNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self, self.restartAfterInterruption else { return }
+            guard let self, self.restartAfterInterruption, self.isStarted else { return }
             self.restartAfterInterruption = false
             idfonLog("idfon camera push: interruption ended; restarting")
             self.queue.async { self.startLocked() }
@@ -71,6 +81,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     }
 
     func start() {
+        isStarted = true
         videoEnabledAt = Date()
         restartAfterInterruption = false
         let state = UIApplication.shared.applicationState
@@ -96,18 +107,25 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         queue.async { self.startLocked() }
     }
     func stop() {
+        isStarted = false
         pendingStart = false
         restartAfterInterruption = false
         if let activationObserver {
             NotificationCenter.default.removeObserver(activationObserver)
             self.activationObserver = nil
         }
+        // Stop unconditionally: a start that was already in flight (or an
+        // interruption that reported isRunning=false) would otherwise leave
+        // the session running past the call — the camera indicator that
+        // outlived the call.
         queue.async {
-            if self.session.isRunning { self.session.stopRunning() }
+            self.session.stopRunning()
+            idfonLog("idfon camera push: stopped (isRunning=\(self.session.isRunning))")
         }
     }
 
     private func startLocked() {
+        guard isStarted else { return }
         if !configured { configure() }
         guard configured, !session.isRunning else { return }
         session.startRunning()
@@ -135,6 +153,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     /// proves nothing.
     private func rebuild(cameraPosition: AVCaptureDevice.Position, preset: String?) {
         queue.async {
+            guard self.isStarted else { return }
             if self.session.isRunning { self.session.stopRunning() }
             let fresh = AVCaptureSession()
             if let preset { fresh.sessionPreset = .init(rawValue: preset) }

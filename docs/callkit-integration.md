@@ -211,6 +211,11 @@ on). If a "hide from call log" preference is ever wanted, that is the switch.
    under every id this device is known by with topic `com.idfon.ios.voip`,
    signed by a self-issued `capability.ticket` (retries while the core boots);
    `didInvalidatePushTokenFor` unregisters. Multi-device: ring-all.
+   `capability.ticket` returns the rcan token as a JSON **string** (older
+   daemons sent the ticket object); pass that string straight to `RingTicket`.
+   Re-encoding it quotes the token and every `/_push/*` request is dropped —
+   registration included, which stops a locked phone from ringing at all.
+   `PushWake`/`CallRing` now accept both shapes.
 2. **Ring/cancel**: both apps post `/_push/ring` (`call_uuid =
    CallUUID.from(invite ticket)`) right after the invite is queued, gated on
    `call_kit` channels only; the `notify()` funnel posts `/_push/cancel` when a
