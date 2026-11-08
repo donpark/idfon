@@ -45,7 +45,11 @@ and structured seam events.
   user-facing output contracts (CLI results, endpoint tickets), not logs.
 - **Agent-side logs are structured too.** The node bridge scripts emit
   single-line JSON on stderr tagged `idfon.bridge` / `idfon.managed` /
-  `idfon.live-relay`, and the Eve extension logs `idfon.agent`; the holder now
+  `idfon.live-relay`, and the Eve extension logs `idfon.agent`. The relay's
+  per-turn `turn timing` line carries the delay ledger (`decision_ms`,
+  `queue_ms`, `stt_ms`, `reply_ms`, `tts_ttfb_ms`, `tts_ms`, `play_ms`,
+  `heard_ms`, `frame_ms`); the call record's `latency` block aggregates the
+  same fields. The holder now
   passes `trace` on `turn.in`/`status.in`/`input.in` so agent logs join the
   trace. The native Swift apps log through an `IdfonLog` helper
   (`os.Logger`, subsystem `app.idfon`, category = source file), filterable with

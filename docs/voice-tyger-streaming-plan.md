@@ -169,7 +169,10 @@ cloning-optional only.
 - Needs: the holder/live-relay reply to arrive as deltas (verify — today's
   `reply_ms` timing suggests whole-reply), and `TtsEngine` a chunked speak
   (or one `speak` per chunk over the bus, already supported).
-- Gate: endpoint→first-audio measured in `live-relay` turn-timing logs.
+- Gate: endpoint→first-audio measured in `live-relay` turn-timing logs —
+  the per-turn `latency` ledger (`decision_ms`, `stt_ms`, `reply_ms`,
+  `tts_ttfb_ms`, `heard_ms`) lands in the call record and the stderr
+  `turn timing` line.
 
 ### Phase 2 — streaming ASR + feature tap (the big one)
 

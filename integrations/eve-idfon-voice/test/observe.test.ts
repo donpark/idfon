@@ -132,6 +132,53 @@ test("bcd block is null when the detector never ran", () => {
   assert.equal(rec.build(new Date(60_000)).bcd, null);
 });
 
+test("latency ledger: per-turn delays and their percentiles", () => {
+  const rec = new CallRecorder("call-latency", new Date(0));
+  // Two user turns, each followed by an agent turn. The ledger points at the
+  // user turn's index in turns[] and carries the waiting-time gaps.
+  const u1 = rec.addTurn({ text: "first", role: "user", started_ms: 10_000, duration_ms: 800 });
+  rec.addTurn({ text: "One.", role: "agent", started_ms: 12_000, duration_ms: 900 });
+  const u2 = rec.addTurn({ text: "second", role: "user", started_ms: 20_000, duration_ms: 700 });
+  rec.addTurn({ text: "Two.", role: "agent", started_ms: 22_000, duration_ms: 900 });
+  rec.recordLatency({
+    turn_index: u1, caller_stop_ms: 10_800, endpoint_ms: 11_600, decision_ms: 800,
+    endpoint_source: "energy", queue_ms: 40, stt_ms: 300, reply_ms: 900, agent_ms: 720,
+    tts_ttfb_ms: 220, tts_ms: 1_200, play_ms: 80, heard_ms: 1_460, frame_ms: 25,
+  });
+  rec.recordLatency({
+    turn_index: u2, caller_stop_ms: 20_700, endpoint_ms: 20_760, decision_ms: 60,
+    endpoint_source: "tyger", queue_ms: 10, stt_ms: 250, reply_ms: 700, agent_ms: 560,
+    tts_ttfb_ms: 180, tts_ms: 1_000, play_ms: 70, heard_ms: 1_190, frame_ms: 25,
+  });
+  rec.recordFramePush(20);
+  rec.recordFramePush(30);
+  const latency = rec.build(new Date(60_000)).latency;
+  assert.equal(latency.turns.length, 2);
+  assert.equal(latency.turns[0].turn_index, u1);
+  assert.equal(latency.turns[0].decision_ms, 800);
+  assert.equal(latency.turns[0].heard_ms, 1_460);
+  assert.equal(latency.turns[0].agent_ms, 720); // the agent's generation, bridge-reported
+  assert.deepEqual(latency.decision_ms, { p50: 60, p90: 800 }); // nearest-rank, 2 values
+  assert.deepEqual(latency.heard_ms, { p50: 1_190, p90: 1_460 });
+  assert.deepEqual(latency.agent_ms, { p50: 560, p90: 720 });
+  assert.deepEqual(latency.endpoint_sources, { tyger: 1, energy: 1 });
+  assert.equal(latency.frame_ms, 25); // mean of 20 and 30
+});
+
+test("latency ledger: a turn with no audio yet reports nulls, not zeros", () => {
+  const rec = new CallRecorder("call-noaudio", new Date(0));
+  const u = rec.addTurn({ text: "hi", role: "user", started_ms: 1_000, duration_ms: 300 });
+  rec.recordLatency({
+    turn_index: u, caller_stop_ms: 1_300, endpoint_ms: 2_100, decision_ms: 800,
+    endpoint_source: "energy", queue_ms: 0, stt_ms: 300, reply_ms: 500, agent_ms: null,
+    tts_ttfb_ms: null, tts_ms: 0, play_ms: 0, heard_ms: null, frame_ms: 0,
+  });
+  const latency = rec.build(new Date(60_000)).latency;
+  assert.deepEqual(latency.tts_ttfb_ms, { p50: 0, p90: 0 }); // empty set
+  assert.deepEqual(latency.heard_ms, { p50: 0, p90: 0 });
+  assert.deepEqual(latency.agent_ms, { p50: 0, p90: 0 }); // nulls excluded
+});
+
 test("bcd events land as counts and raw events", () => {
   const rec = new CallRecorder("call-bcd", new Date(0));
   rec.markBcdActive();

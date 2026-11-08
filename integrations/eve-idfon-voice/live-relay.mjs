@@ -100,7 +100,7 @@ async function synthesize(text) {
 
 async function forward(text) {
   const wrap = engine.wrap;
-  if (!wrap) return text; // no wrapped agent: echo the transcript back (check)
+  if (!wrap) return { text, agent_ms: null }; // no wrapped agent: echo the transcript back (check)
   const replyTo = `wrap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const response = await fetch(`${bridge}/send`, {
     method: "POST",
@@ -112,20 +112,28 @@ async function forward(text) {
     }),
   });
   if (!response.ok) throw new Error(`send HTTP ${response.status}`);
-  return ((await response.json()).reply?.text ?? "").trim();
+  const reply = (await response.json()).reply ?? {};
+  // `agent_ms` is the bridge's own clock for the agent's generation; the
+  // caller's `reply_ms` also carries the bridge round trip on top of it.
+  return { text: (reply.text ?? "").trim(), agent_ms: reply.agent_ms ?? null };
 }
 
-async function play(peerId, pcm) {
+async function play(peerId, pcm, lat) {
+  const t0 = Date.now();
+  // The first PCM posted to the bridge is the earliest the caller can hear
+  // the reply — the ledger's "heard" clock starts here.
+  if (lat && lat.tts_first_audio_ms === null) lat.tts_first_audio_ms = t0 - callStartedAt;
   const response = await fetch(`${bridge}/live/audio`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
     body: JSON.stringify({ peer_id: peerId, pcm_base64: pcm.toString("base64") }),
   });
+  if (lat) lat.play_ms += Date.now() - t0;
   if (!response.ok) throw new Error(`live audio HTTP ${response.status}`);
 }
 
 /** ElevenLabs chunked TTS: post each PCM chunk as it arrives. */
-async function speakElevenLabs(cfg, text, peerId) {
+async function speakElevenLabs(cfg, text, peerId, lat) {
   const base = (cfg.base_url || "https://api.elevenlabs.io/v1").replace(/\/$/, "");
   const url = `${base}/text-to-speech/${cfg.voice}?output_format=pcm_${RATE}`;
   const response = await fetch(url, {
@@ -142,23 +150,24 @@ async function speakElevenLabs(cfg, text, peerId) {
     carry = Buffer.concat([carry, Buffer.from(value)]);
     const usable = carry.length - (carry.length % 2);
     if (usable > 0) {
-      await play(peerId, carry.subarray(0, usable));
+      await play(peerId, carry.subarray(0, usable), lat);
       carry = carry.subarray(usable);
     }
   }
 }
 
 /** Speak text on the call, streaming when the TTS provider supports it. */
-async function speak(text, peerId) {
+async function speak(text, peerId, lat) {
   botSpeech.speaking = true;
   botSpeech.onsetMs = Date.now() - callStartedAt;
+  if (lat) lat.tts_start_ms = botSpeech.onsetMs;
   try {
     const cfg = engine.tts || {};
     const spoken = spokenText(text);
     if ((cfg.provider || "openai-compatible") === "elevenlabs") {
-      return await speakElevenLabs(cfg, spoken, peerId);
+      return await speakElevenLabs(cfg, spoken, peerId, lat);
     }
-    await play(peerId, await synthesize(spoken));
+    await play(peerId, await synthesize(spoken), lat);
   } finally {
     botSpeech.speaking = false;
     botSpeech.stopMs = Date.now() - callStartedAt;
@@ -221,6 +230,12 @@ let speaking = false;
 let quiet = 0;
 let utterance = Buffer.alloc(0);
 let frames = 0;
+// The last frame whose audio was loud: the caller's utterance end, not the
+// quiet-tail end. The gap to the endpoint decision is the endpointer's delay.
+let lastVoicedMs = 0;
+// Frame-loop cost: the model's own time. A push slower than the frame's audio
+// duration means the loop is falling behind real time.
+const pipeline = { pushTotal: 0 };
 let greeted = false;
 // Turn work runs off the frame loop, in order (see handleTurn).
 let turnChain = Promise.resolve();
@@ -239,7 +254,10 @@ let bcd = null;
 const botSpeech = { speaking: false, onsetMs: null, stopMs: null };
 
 async function onFrame(frame) {
+  const nowMs = Date.now() - callStartedAt;
   const pcm = Buffer.from(frame.pcm_base64, "base64");
+  const loud = isLoud(pcm);
+  if (loud) lastVoicedMs = nowMs;
   frames += 1;
   if (frames === 1 || frames % 500 === 0) log.info("frames", { count: frames, peer_id: frame?.peer_id });
   // Greet on connect: the live server-cascade plan has no greet turn — the
@@ -256,14 +274,18 @@ async function onFrame(frame) {
     sendTranscript(frame?.peer_id, "agent", greeting, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
   }
   utterance = Buffer.concat([utterance, pcm]);
+  const pushStart = Date.now();
   const decisions = tyger ? await tyger.push(pcm) : [];
+  const pushMs = Date.now() - pushStart;
+  pipeline.pushTotal += pushMs;
+  recorder.recordFramePush(pushMs);
   const tygerEnd = decisions.includes("endpoint");
   if (decisions.includes("backchannel") || decisions.includes("barge")) {
     log.info("tyger", { decisions: decisions.join(",") });
   }
   if (decisions.includes("barge")) recorder.recordPlaybackTruncated(Date.now() - callStartedAt);
   if (bcd) bcd.push(pcm);
-  if (isLoud(pcm)) {
+  if (loud) {
     if (!speaking) { speaking = true; utterance = pcm; }
     quiet = 0;
     if (!tygerEnd) return;
@@ -283,15 +305,23 @@ async function onFrame(frame) {
   const peerId = frame?.peer_id;
   const trace = frame?.trace;
   const turnEndMs = Date.now() - callStartedAt;
-  turnChain = turnChain.then(() => handleTurn(speech, peerId, trace, turnEndMs));
+  const frameMs = frames > 0 ? Math.round(pipeline.pushTotal / frames) : 0;
+  turnChain = turnChain.then(() => handleTurn(speech, peerId, trace, turnEndMs, {
+    callerStopMs: lastVoicedMs,
+    endpointSource: tygerEnd ? "tyger" : "energy",
+    frameMs,
+  }));
 }
 
-async function handleTurn(speech, peerId, trace, turnEndMs) {
+async function handleTurn(speech, peerId, trace, turnEndMs, turnInfo = {}) {
   const started = Date.now();
+  const frameStart = pipeline.pushTotal;
+  const frameCountStart = frames;
   try {
+    const sttStart = Date.now();
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
-    const sttMs = Date.now() - started;
+    const sttMs = Date.now() - sttStart;
     const captureMs = Math.round((speech.length / 2 / RATE) * 1000);
     log.info("heard", {
       transcript,
@@ -300,20 +330,65 @@ async function handleTurn(speech, peerId, trace, turnEndMs) {
     });
     // Observation record: the user turn is the captured utterance, timed from
     // its audio ([endpoint - capture, endpoint], call-relative).
-    recorder.addTurn({ text: transcript, role: "user", started_ms: turnEndMs - captureMs, duration_ms: captureMs });
+    const turnIndex = recorder.addTurn({ text: transcript, role: "user", started_ms: turnEndMs - captureMs, duration_ms: captureMs });
+    const callerStopMs = turnInfo.callerStopMs ?? turnEndMs;
+    // The delay ledger: where the turn's waiting time goes. Every field is
+    // call-relative ms; the gaps are what the caller feels.
+    const lat = {
+      turn_index: turnIndex,
+      caller_stop_ms: callerStopMs,
+      endpoint_ms: turnEndMs,
+      endpoint_source: turnInfo.endpointSource ?? "energy",
+      decision_ms: Math.max(0, turnEndMs - callerStopMs),
+      queue_ms: Math.max(0, started - callStartedAt - turnEndMs),
+      stt_ms: sttMs,
+      reply_ms: 0,
+      agent_ms: null,
+      tts_ttfb_ms: null,
+      tts_ms: 0,
+      play_ms: 0,
+      heard_ms: null,
+      frame_ms: frameCountStart < frames
+        ? Math.round((pipeline.pushTotal - frameStart) / (frames - frameCountStart))
+        : 0,
+      tts_start_ms: null,
+      tts_first_audio_ms: null,
+    };
     sendTranscript(peerId, "caller", transcript, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const replyStart = Date.now();
-    const reply = (await forward(transcript)).trim();
+    const forwarded = await forward(transcript);
+    const reply = forwarded.text;
     if (!reply) return;
     const replyMs = Date.now() - replyStart;
-    log.info("reply", { reply, peer_id: peerId, trace, reply_ms: replyMs });
+    lat.reply_ms = replyMs;
+    lat.agent_ms = forwarded.agent_ms;
+    log.info("reply", { reply, peer_id: peerId, trace, reply_ms: replyMs, agent_ms: forwarded.agent_ms });
     sendTranscript(peerId, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const playStart = Date.now();
-    await speak(reply, peerId);
+    await speak(reply, peerId, lat);
+    const playMs = Date.now() - playStart;
     // Observation record: the agent turn is the delivery window (TTS + posting),
     // approximating when the caller hears the agent.
-    recorder.addTurn({ text: spokenText(reply), role: "agent", started_ms: playStart - callStartedAt, duration_ms: Date.now() - playStart });
-    log.info("turn timing", { stt_ms: sttMs, reply_ms: replyMs, total_ms: Date.now() - started });
+    recorder.addTurn({ text: spokenText(reply), role: "agent", started_ms: playStart - callStartedAt, duration_ms: playMs });
+    lat.tts_ms = playMs;
+    lat.tts_ttfb_ms = lat.tts_first_audio_ms === null ? null : lat.tts_first_audio_ms - lat.tts_start_ms;
+    lat.heard_ms = lat.tts_first_audio_ms === null ? null : lat.tts_first_audio_ms - callerStopMs;
+    const { tts_start_ms, tts_first_audio_ms, ...ledger } = lat;
+    recorder.recordLatency(ledger);
+    log.info("turn timing", {
+      stt_ms: sttMs,
+      reply_ms: replyMs,
+      agent_ms: ledger.agent_ms,
+      total_ms: Date.now() - started,
+      decision_ms: ledger.decision_ms,
+      queue_ms: ledger.queue_ms,
+      endpoint: ledger.endpoint_source,
+      tts_ttfb_ms: ledger.tts_ttfb_ms,
+      tts_ms: ledger.tts_ms,
+      play_ms: ledger.play_ms,
+      heard_ms: ledger.heard_ms,
+      frame_ms: ledger.frame_ms,
+    });
   } catch (error) {
     log.error("turn failed", { peer_id: peerId, trace, error: String(error) });
   }
@@ -333,6 +408,8 @@ async function emitCallRecord() {
       const record = recorder.build();
       appendCallRecord(path, record);
       log.info("call record", { path, call_id: record.call_id, turn_count: record.turn_count });
+      const { turns, ...latency } = record.latency;
+      log.info("call latency", { call_id: record.call_id, ...latency, turns: turns.length });
     }
   } catch (error) {
     log.warn("call record failed", { error: String(error) });

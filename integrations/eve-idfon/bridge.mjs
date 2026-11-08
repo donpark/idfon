@@ -247,6 +247,10 @@ const server = createServer(async (request, response) => {
           reject(new Error("timed out waiting for reply"));
         }, timeoutMs);
         pendingReplies.set(replyKey, {
+          // Agent-turn clock: `/send` starts here, `/reply` resolves it. The
+          // elapsed time is the agent's own generation, separate from the
+          // relay's full `reply_ms` (which also carries the bridge round trip).
+          sentAt: Date.now(),
           resolve: (value) => { clearTimeout(timer); resolve(value); },
           reject: (error) => { clearTimeout(timer); reject(error); },
         });
@@ -634,17 +638,24 @@ const server = createServer(async (request, response) => {
   if (!body.in_reply_to || typeof body.text !== "string") {
     response.writeHead(400); response.end("invalid reply\n"); return;
   }
-  // Boundary wide event: the agent produced a reply for a turn. Absence of
-  // this line after a `forwarding to agent` is "the agent never finished".
-  log.info("agent replied", { in_reply_to: body.in_reply_to, chars: body.text.length });
-  const replyText = withSpeakCorrelation(body.text, turnOf.get(body.in_reply_to));
-  turnOf.delete(body.in_reply_to);
   // A local turn (a voice engine wrapping this instance's agent) waits on the
   // /reply itself — resolve it here and skip the holder round trip.
   const localWaiter = pendingReplies.get(body.in_reply_to);
+  const agentMs = localWaiter?.sentAt ? Date.now() - localWaiter.sentAt : null;
+  // Boundary wide event: the agent produced a reply for a turn. Absence of
+  // this line after a `forwarding to agent` is "the agent never finished".
+  // `agent_ms` is the generation time alone; the relay's `reply_ms` adds the
+  // bridge's own overhead on top.
+  log.info("agent replied", {
+    in_reply_to: body.in_reply_to,
+    chars: body.text.length,
+    agent_ms: agentMs,
+  });
+  const replyText = withSpeakCorrelation(body.text, turnOf.get(body.in_reply_to));
+  turnOf.delete(body.in_reply_to);
   if (localWaiter) {
     pendingReplies.delete(body.in_reply_to);
-    localWaiter.resolve({ text: replyText });
+    localWaiter.resolve({ text: replyText, agent_ms: agentMs });
     response.writeHead(200, { "content-type": "application/json" });
     response.end("{}");
     return;

@@ -4,7 +4,16 @@
 // `TurnBridge::record_playback_truncated` is the daemon-side analog of
 // `recordPlaybackTruncated`.
 
-import type { BcdEvent, CallRecord, FrictionEvent, Percentiles, TurnEntry, TurnRole } from "./schema.ts";
+import type {
+  BcdEvent,
+  CallLatency,
+  CallRecord,
+  FrictionEvent,
+  Percentiles,
+  TurnEntry,
+  TurnLatency,
+  TurnRole,
+} from "./schema.ts";
 
 /** Early hangup: the call ended below either bound. */
 export const EARLY_HANGUP_TURNS = 4;
@@ -51,14 +60,30 @@ export class CallRecorder {
   #truncations: number[] = [];
   #bcdActive = false;
   #bcdEvents: BcdEvent[] = [];
+  #latency: TurnLatency[] = [];
+  #framePushTotal = 0;
+  #framePushCount = 0;
 
   constructor(callId: string, startedAt: Date = new Date()) {
     this.callId = callId;
     this.startedAt = startedAt;
   }
 
-  addTurn(input: TurnInput): void {
+  /** Returns the new turn's index in `turns[]`, so a latency ledger can point at it. */
+  addTurn(input: TurnInput): number {
     this.#turns.push({ ...input, how: { ...HOW_NULLS } });
+    return this.#turns.length - 1;
+  }
+
+  /** A completed turn's delay ledger (call-relative ms); order follows `turns[]`. */
+  recordLatency(entry: TurnLatency): void {
+    this.#latency.push(entry);
+  }
+
+  /** One frame's endpointer push cost; `build()` averages them. */
+  recordFramePush(ms: number): void {
+    this.#framePushTotal += ms;
+    this.#framePushCount += 1;
   }
 
   /** Playback was cut short by a barge-in at `atMs` (call-relative). */
@@ -103,6 +128,7 @@ export class CallRecorder {
         preamble_chars_p50: percentile(agentTurns.map((t) => firstSentenceLength(t.text)), 0.5),
       },
       friction: this.#friction(turns, endedAt.getTime() - this.startedAt.getTime()),
+      latency: this.#latencySummary(),
       bcd: this.#bcdActive
         ? {
             backchannels: this.#bcdEvents.filter((e) => e.kind === "backchannel").length,
@@ -111,6 +137,26 @@ export class CallRecorder {
           }
         : null,
       turns,
+    };
+  }
+
+  #latencySummary(): CallLatency {
+    const turns = this.#latency.map((t) => ({ ...t }));
+    const endpointSources = { tyger: 0, energy: 0 };
+    for (const t of turns) endpointSources[t.endpoint_source] += 1;
+    const nums = (pick: (t: TurnLatency) => number | null) =>
+      percentiles(turns.map(pick).filter((v): v is number => v !== null));
+    return {
+      turns,
+      decision_ms: percentiles(turns.map((t) => t.decision_ms)),
+      queue_ms: percentiles(turns.map((t) => t.queue_ms)),
+      stt_ms: percentiles(turns.map((t) => t.stt_ms)),
+      reply_ms: percentiles(turns.map((t) => t.reply_ms)),
+      agent_ms: nums((t) => t.agent_ms),
+      tts_ttfb_ms: nums((t) => t.tts_ttfb_ms),
+      heard_ms: nums((t) => t.heard_ms),
+      frame_ms: this.#framePushCount === 0 ? 0 : Math.round(this.#framePushTotal / this.#framePushCount),
+      endpoint_sources: endpointSources,
     };
   }
 

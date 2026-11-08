@@ -483,9 +483,14 @@ final class VoiceAgentSession: NSObject {
         }
         // Turn-stage timings for the latency report (docs/benchmarks.md):
         // asr_gap_ms = turn-detection wait, reply_ms = network + agent turn,
-        // speak_ms = TTS + playback (includes speak()'s post-roll hold).
+        // tts_first_ms = TTS's first audio, speak_ms = TTS + playback
+        // (includes speak()'s post-roll hold), heard_ms = caller stop -> first
+        // audio. heard_ms is the number the caller actually feels.
+        let turnTotalMs = Int(Date().timeIntervalSince(turnStart) * 1000)
+        let ttsFirstMs = speakMs > 0 ? (tts.lastLatencyMs ?? -1) : -1
+        let heardMs = segmenter.lastCommitGapMs + turnTotalMs - speakMs + (ttsFirstMs >= 0 ? ttsFirstMs : 0)
         Automation.mark(
-            "voice-agent: turn=\(turnsDone) asr_gap_ms=\(segmenter.lastCommitGapMs) listen_ms=\(lastListenMs) reply_ms=\(replyMs) speak_ms=\(speakMs) total_ms=\(Int(Date().timeIntervalSince(turnStart) * 1000))"
+            "voice-agent: turn=\(turnsDone) asr_gap_ms=\(segmenter.lastCommitGapMs) listen_ms=\(lastListenMs) reply_ms=\(replyMs) tts_first_ms=\(ttsFirstMs) speak_ms=\(speakMs) total_ms=\(turnTotalMs) heard_ms=\(heardMs)"
         )
         updateStats()
         setState(.idle)

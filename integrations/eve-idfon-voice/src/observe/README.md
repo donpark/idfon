@@ -38,6 +38,35 @@ agent behavior mismatch? No classifiers, no models, no adaptation logic.
     { "type": "early_hangup", "turn_index": 6, "excerpt": "" }
   ],
   "bcd": { "backchannels": 1, "floor_takes": 0, "events": [ { "kind": "backchannel", "at_ms": 52100, "p": 0.83 } ] },
+  "latency": {
+    "turns": [
+      {
+        "turn_index": 1,
+        "caller_stop_ms": 12500,
+        "endpoint_ms": 13020,
+        "decision_ms": 520,
+        "endpoint_source": "tyger",
+        "queue_ms": 12,
+        "stt_ms": 280,
+        "reply_ms": 1450,
+        "agent_ms": 1120,
+        "tts_ttfb_ms": 190,
+        "tts_ms": 980,
+        "play_ms": 70,
+        "heard_ms": 2452,
+        "frame_ms": 22
+      }
+    ],
+    "decision_ms": { "p50": 520, "p90": 520 },
+    "queue_ms": { "p50": 12, "p90": 12 },
+    "stt_ms": { "p50": 280, "p90": 280 },
+    "reply_ms": { "p50": 1450, "p90": 1450 },
+    "agent_ms": { "p50": 1120, "p90": 1120 },
+    "tts_ttfb_ms": { "p50": 190, "p90": 190 },
+    "heard_ms": { "p50": 2452, "p90": 2452 },
+    "frame_ms": 22,
+    "endpoint_sources": { "tyger": 1, "energy": 0 }
+  },
   "turns": [
     {
       "text": "mm-hmm",
@@ -79,6 +108,32 @@ Field notes (heuristics are deliberately crude — raw evidence, not judgments):
 - `bcd` — backchannel-detector events (src/bcd/) at call-relative ms: counts +
   raw events. **Null when the detector was off** (`IDFON_BCD=off` or no model
   bundle). Shadow only: recorded, never acted on.
+- `latency` — the per-turn delay ledger: where the call's waiting time goes.
+  One entry per user turn that reached the reply path, in `turns[]` order.
+  - `caller_stop_ms` — the caller's last voiced frame: the utterance's end, not
+    the quiet tail's end.
+  - `endpoint_ms` — the endpoint decision fired. `decision_ms` is the gap: the
+    endpointer's own delay (the tyger head's time, or the energy path's 800 ms
+    quiet tail).
+  - `endpoint_source` — `tyger` (the head ended the turn) or `energy` (the
+    fail-open fallback did). The split is the first question when a call feels
+    slow: the wrong endpointer explains a lot of waiting.
+  - `queue_ms` — `endpoint_ms` → the turn starting its STT/agent work.
+  - `stt_ms`, `reply_ms` — the STT and wrapped-agent requests. `reply_ms` is
+    the full round trip; `agent_ms` is the bridge's clock for the agent's
+    generation alone. `reply_ms - agent_ms` is the bridge's own overhead — the
+    split that tells you whether the wait is the model or the plumbing. Null
+    when the bridge did not report it.
+  - `tts_ttfb_ms` — TTS request start → the first PCM posted to the bridge;
+    null when TTS produced no audio. `tts_ms` is the whole delivery window,
+    `play_ms` the bridge POST time inside it.
+  - `heard_ms` — the caller's perceived wait: `caller_stop_ms` → first PCM
+    posted. Null when no audio was produced.
+  - `frame_ms` — the mean frame-loop push cost during the turn: the decision
+    model's own time. A push slower than the frame's audio duration means the
+    loop is falling behind real time.
+  - The top-level percentiles are nearest-rank over the turns; empty sets
+    report 0.
 - `turns[].how` — **reserved paralinguistic slot**, always nulls in v1. Later
   it carries RCS-style annotation strings (e.g.
   `([emotion angry=0.81, neutral=0.12],[sarcasm value=0.04])`); parsing and
