@@ -18,6 +18,7 @@
     "voice": "bash ./scripts/voice.sh",
     "tyger": "bash ./scripts/tyger-model.sh",
     "pair": "bash ./scripts/pair-apple-channels.sh",
+    "test-contacts": "bash ./scripts/test-contacts.sh",
     "agent": "bash ./scripts/agent.sh",
     "ane": "bash ./scripts/ane.sh",
     "idfon": "node cli/idfon/bin/idfon.js",

@@ -15,9 +15,10 @@
 // Credentials, per the contact's posture:
 // - A public agent (live config opted in) gets a subject-less ticket minted
 //   into the link — tap, approve, callable.
-// - A protected agent gets a short **admission code** on its card instead.
-//   The app's modal collects the code and redeems it at `POST /redeem` with
-//   the device's own peer id; this script then does exactly what
+// - A protected agent gets a short **admission code** instead. It rides in
+//   the QR and the `idfon://add/` link — a per-load, one-shot nonce, not a
+//   bearer secret, so the link is safe to tap straight through. The app
+//   redeems it at `POST /redeem` with the device's own peer id; this script
 //   `radio-admit.sh` does — allow-lists the sender and mints the
 //   sender-bound ticket (`ticket --subject <peer>`) — and returns it.
 //   Codes are one-shot and live only while `--serve` runs.
@@ -132,18 +133,24 @@ const escapeXml = (text) =>
   String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
 function renderPage(rows) {
+  // One row per contact; only the expanded row shows its QR, so the phone
+  // never scans a grid of codes at once.
   const cards = rows
     .map(({ contact, link, posture, code }) => {
       const qr = qrcode(0, "L");
       qr.addData(link);
       qr.make();
-      return `  <article>
-    <h2>${escapeXml(contact.name)}</h2>
-    <p class="posture">${escapeXml(posture)}</p>
-    ${code ? `<p class="code">admission code <b>${escapeXml(code)}</b></p>` : ""}
-    <p>${qr.createSvgTag({ cellSize: 3, margin: 4, scalable: true })}</p>
-    <p><a href="${escapeXml(link)}">tap to add</a></p>
-  </article>`;
+      return `  <details name="contacts">
+    <summary>
+      <b>${escapeXml(contact.name)}</b>
+      <span class="posture">${escapeXml(posture)}</span>
+    </summary>
+    <div class="detail">
+      <p>${qr.createSvgTag({ cellSize: 3, margin: 4, scalable: true })}</p>
+      <p><a href="${escapeXml(link)}">tap to add</a></p>
+      ${code ? `<p class="code">admission code <b>${escapeXml(code)}</b></p>` : ""}
+    </div>
+  </details>`;
     })
     .join("\n");
   return `<!DOCTYPE html>
@@ -154,9 +161,12 @@ function renderPage(rows) {
 <title>Test contacts</title>
 <style>
   body { font: 15px/1.45 -apple-system, sans-serif; margin: 1rem auto; max-width: 26rem; padding: 0 1rem; }
-  article { border: 1px solid #ddd; border-radius: 10px; padding: 0.9rem 1rem; margin-bottom: 1rem; }
-  h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
-  .posture { margin: 0 0 0.5rem; color: #666; font-size: 0.85rem; }
+  details { border-bottom: 1px solid #ddd; }
+  details:first-of-type { border-top: 1px solid #ddd; }
+  summary { padding: 0.75rem 0.25rem; cursor: pointer; }
+  summary b { font-size: 1.05rem; }
+  .posture { display: block; color: #666; font-size: 0.85rem; margin-top: 0.15rem; }
+  .detail { text-align: center; padding: 0.25rem 0 1.1rem; }
   .code b { font-family: ui-monospace, monospace; font-size: 1.2rem; letter-spacing: 0.15em; }
   svg { width: 11rem; height: 11rem; }
 </style>
@@ -187,11 +197,12 @@ function cardRow(contact, codes, redeemURL) {
       auth: {
         kind: "code",
         label: "Admission code",
-        criteria: `${contact.name} gates admission on a sender-bound ticket. Enter the admission code shown on the test-contacts page.`,
+        criteria: `${contact.name} gates admission on a sender-bound ticket.`,
         url: redeemURL,
+        code,
       },
     })}`,
-    posture: "protected — approval modal asks for the admission code",
+    posture: "protected — admission code rides in the link, redeemed on tap",
     code,
   };
 }
@@ -200,9 +211,9 @@ function cardRow(contact, codes, redeemURL) {
 
 function selfTest() {
   const contact = { instance: "x", name: "X", home: "/tmp", keyFile: "/none", live: null, contact: '{"id":"abc"}' };
-  const link = envelope(contact, { auth: { kind: "code", label: "c", url: "http://n/redeem" } });
+  const link = envelope(contact, { auth: { kind: "code", label: "c", url: "http://n/redeem", code: "AB12CD" } });
   const decoded = JSON.parse(Buffer.from(link, "base64url").toString("utf8"));
-  if (decoded.contact.label !== "X" || decoded.auth.kind !== "code" || decoded.capability) {
+  if (decoded.contact.label !== "X" || decoded.auth.kind !== "code" || decoded.auth.code !== "AB12CD" || decoded.capability) {
     throw new Error("envelope shape wrong");
   }
   const codes = new Codes();

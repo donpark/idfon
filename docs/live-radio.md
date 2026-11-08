@@ -271,15 +271,15 @@ see **Pairing the iPhone** below).
 ### Pairing the iPhone
 
 > **Testing?** Skip this dance: `node scripts/test-contacts-page.mjs --serve`,
-> open the page on the phone, tap the contact, approve in the modal (an
-> admission code replaces the console work for protected stations). See
+> open the page on the phone, expand the contact, tap to add and approve in
+> the modal (the admission code rides in the link for protected stations). See
 > `docs/contact-exchange.md` "The test-contacts page".
 
 Two credentials, because they answer different questions: the **contact**
 (`peer.add`) says who to talk to, and a **capability ticket** — issued by the
 station, bound to the sender — is what its ingress gate checks on every
 message, including the call invite. The app has no free-form paste for the
-second one (the test page's admission-code modal is the testing delivery
+second one (the test page's admission-code link is the testing delivery
 path; production delivery stays link-only), so a phone is paired with
 `devicectl`, in two launches.
 

@@ -9,14 +9,17 @@ import CoreImage
 /// Contacts app, and show the QR form of the link. QR scanning is phone-side:
 /// the Mac shows the code for the phone's camera.
 /// How a protected contact admits a device — the `auth` block of an add
-/// envelope. The approval modal runs it: agent criteria shown, an admission
-/// code collected, and redeemed for the sender-bound capability ticket (the
-/// `radio-admit.sh` contract, over `redeem`).
+/// envelope. The approval modal runs it: agent criteria shown, and the
+/// admission code redeemed for the sender-bound capability ticket (the
+/// `radio-admit.sh` contract, over `redeem`). The code usually rides in the
+/// link itself (a per-load one-shot nonce); a `code` is only typed when the
+/// envelope left it out.
 struct AddAuth: Equatable {
     var kind: String
     var label: String
     var criteria: String?
     var redeemURL: String
+    var code: String?
 }
 
 enum ContactExchange {
@@ -55,7 +58,8 @@ enum ContactExchange {
                 kind: kind,
                 label: (auth["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Admission code",
                 criteria: (auth["criteria"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-                redeemURL: url)
+                redeemURL: url,
+                code: (auth["code"] as? String).flatMap { $0.isEmpty ? nil : $0 })
         }
         return (contactJSON, capabilityJSON, auth)
     }
@@ -101,11 +105,12 @@ enum ContactExchange {
         alert.informativeText = auth?.criteria ?? "Add this contact to Idfon."
         alert.addButton(withTitle: "Add")
         alert.addButton(withTitle: "Deny")
-        // The rename opportunity, and the admission code when the contact is
-        // protected (its auth flow runs below).
+        // The rename opportunity, and an admission code field only when the
+        // link did not carry one (its auth flow runs below).
         let nameField = NSTextField(string: name)
         nameField.placeholderString = "Name"
-        let codeField = auth.map { auth -> NSTextField in
+        let codeField = auth.flatMap { auth -> NSTextField? in
+            guard auth.code == nil else { return nil }
             let field = NSTextField(string: "")
             field.placeholderString = auth.label
             return field
@@ -146,9 +151,10 @@ enum ContactExchange {
     /// Redeems an admission code for the sender-bound capability ticket:
     /// `POST {code, subject}` to the envelope's `auth.url`, where the page
     /// allow-lists this device and mints `ticket --subject <peer>` for it
-    /// (the `radio-admit.sh` contract, no console round-trip).
+    /// (the `radio-admit.sh` contract, no console round-trip). The code is
+    /// the one embedded in the link, else the typed one.
     private static func redeem(auth: AddAuth, code: String?, client: DaemonClient) async throws -> String {
-        guard let code = code?.trimmingCharacters(in: .whitespaces), !code.isEmpty else {
+        guard let code = (auth.code ?? code)?.trimmingCharacters(in: .whitespaces), !code.isEmpty else {
             throw NSError(domain: "idfon.add", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "An admission code is required."])
         }

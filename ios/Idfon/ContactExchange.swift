@@ -13,14 +13,17 @@ import UIKit
 /// standard `URL` property (`idfon://add/<base64url>`) that survives the
 /// Contacts round-trip and deep-links back here.
 /// How a protected contact admits a device — the `auth` block of an add
-/// envelope. The approval modal runs it: agent criteria shown, an admission
-/// code collected, and redeemed for the sender-bound capability ticket (the
-/// `radio-admit.sh` contract, over `redeem`).
+/// envelope. The approval modal runs it: agent criteria shown, and the
+/// admission code redeemed for the sender-bound capability ticket (the
+/// `radio-admit.sh` contract, over `redeem`). The code usually rides in the
+/// link itself (a per-load one-shot nonce); a `code` is only typed when the
+/// envelope left it out.
 struct AddAuth: Equatable {
     var kind: String
     var label: String
     var criteria: String?
     var redeemURL: String
+    var code: String?
 }
 
 enum ContactExchange {
@@ -59,7 +62,8 @@ enum ContactExchange {
                 kind: kind,
                 label: (auth["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Admission code",
                 criteria: (auth["criteria"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-                redeemURL: url)
+                redeemURL: url,
+                code: (auth["code"] as? String).flatMap { $0.isEmpty ? nil : $0 })
         }
         return (contactJSON, capabilityJSON, auth)
     }
@@ -108,7 +112,8 @@ enum ContactExchange {
             field.text = name
             field.placeholder = "Name"
         }
-        if let auth {
+        // An admission code field only when the link did not carry one.
+        if let auth, auth.code == nil {
             alert.addTextField { field in
                 field.placeholder = auth.label
                 field.autocapitalizationType = .allCharacters
@@ -120,7 +125,7 @@ enum ContactExchange {
             let typed = alert.textFields?.first?.text?
                 .trimmingCharacters(in: .whitespaces)
             let renamed = (typed?.isEmpty == false ? typed : nil) ?? name
-            let code = auth != nil ? alert.textFields?.last?.text : nil
+            let code = auth.flatMap { $0.code ?? alert.textFields?.last?.text }
             Task {
                 do {
                     var credential = capabilityJSON
@@ -153,9 +158,10 @@ enum ContactExchange {
     /// Redeems an admission code for the sender-bound capability ticket:
     /// `POST {code, subject}` to the envelope's `auth.url`, where the page
     /// allow-lists this device and mints `ticket --subject <peer>` for it
-    /// (the `radio-admit.sh` contract, no console round-trip).
+    /// (the `radio-admit.sh` contract, no console round-trip). The code is
+    /// the one embedded in the link, else the typed one.
     private static func redeem(auth: AddAuth, code: String?, client: IdfonClient) async throws -> String {
-        guard let code = code?.trimmingCharacters(in: .whitespaces), !code.isEmpty else {
+        guard let code = (auth.code ?? code)?.trimmingCharacters(in: .whitespaces), !code.isEmpty else {
             throw NSError(domain: "idfon.add", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "An admission code is required."])
         }

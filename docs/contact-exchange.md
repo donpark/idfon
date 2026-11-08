@@ -69,23 +69,27 @@ envelope carries an `auth` block instead of a capability ticket:
 
 ```json
 { "contact": …, "auth": { "kind": "code", "label": "Admission code",
-  "criteria": "…", "url": "http://<host>:<port>/redeem" } }
+  "criteria": "…", "url": "http://<host>:<port>/redeem", "code": "AB12CD" } }
 ```
 
-The modal shows the agent's `criteria`, collects the admission code, and
-redeems it (`POST {code, subject}` with the device's own peer id) for the
-sender-bound capability ticket — the `radio-admit.sh` contract
-(`allowed-peers` + `ticket --subject <peer>`) with no console round-trip.
-Codes are one-shot.
+The modal shows the agent's `criteria`, and the admission code — a per-load,
+one-shot nonce embedded in the QR and the tap link, so the link is safe to
+fire off directly — is redeemed (`POST {code, subject}` with the device's own
+peer id) for the sender-bound capability ticket — the `radio-admit.sh`
+contract (`allowed-peers` + `ticket --subject <peer>`) with no console
+round-trip. A code is typed only when an envelope leaves `code` out. Codes
+are one-shot.
 
 ## The test-contacts page (testing without pairing)
 
 `node scripts/test-contacts-page.mjs --serve` renders every holder identity
-under `~/.idfon` as a card (QR + tap link) on the local network. Public agents
-get subject-less tickets in the link; protected ones get a per-load admission
-code that the modal redeems. This replaces the `-pair` / `-pair-ticket` +
-`devicectl` pairing dance for testing (see `docs/live-radio.md` "Pairing the
-iPhone"); the holder's sender binding stays.
+under `~/.idfon` as a list on the local network; a row expands into its QR +
+tap link, so the phone never faces a grid of scannable codes at once. Public
+agents get subject-less tickets in the link; protected ones get the per-load
+admission code embedded in the link, redeemed on tap. This replaces the
+`-pair` / `-pair-ticket` + `devicectl` pairing dance for testing (see
+`docs/live-radio.md` "Pairing the iPhone"); the holder's sender binding
+stays.
 
 ## Policy notes
 
