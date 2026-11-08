@@ -64,6 +64,13 @@ weight.bin
 
 # Benchmark result history (scripts/relay-bench.sh)
 /bench-results/
+
+# The Open Yap turn-range dataset's data lives in the HF repo; the repo keeps the
+# card, licence and notice only. scripts/openyap-publish.py writes these here.
+/docs/open-yap-turn-annotations/ranges.jsonl
+/docs/open-yap-turn-annotations/manifest.csv
+/docs/open-yap-turn-annotations/SHA256SUMS
+/docs/open-yap-turn-annotations/validation.json
 /ports/tyger-swift/.build/
 /tools/*/.build/
 /tools/*/__pycache__/
