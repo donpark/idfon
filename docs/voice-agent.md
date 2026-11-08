@@ -289,9 +289,15 @@ engine block. Streaming where it matters: ElevenLabs TTS streams by default
 via `"stream": true` (WebSocket partials, lower first-final latency) while
 batch REST stays the default.
 
-**Default (`agents/voice/live.json`)** is the streaming split — Deepgram
-WebSocket STT (`nova-3`, `stream: true`) + ElevenLabs `/stream` TTS. Four
-cascade behaviours are worth knowing:
+**Default (`agents/voice/live.json`)** is the tyger relay (`backend: "relay"`):
+the holder streams caller frames over the bridge and the tyger stack owns
+turn-taking, the reply and the speech. The shipping on-device stack is the
+Parakeet-family streaming ASR (Nemotron) + blixt's Phonon 31m-en TTS —
+on-device on the latest phones, off-device on older ones. **Deepgram is a
+sponsor option, not the default.** The streaming split
+(`agents/voice/providers/deepgram-elevenlabs.json`: Deepgram WebSocket STT +
+ElevenLabs `/stream` TTS) is a preset to try. Four cascade behaviours are worth
+knowing:
 
 - **One reply, one synthesis.** TTS is synthesized for the **whole**
   (envelope-stripped) reply when the turn completes, not per-delta: incremental

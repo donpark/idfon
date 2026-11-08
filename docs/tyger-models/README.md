@@ -88,8 +88,9 @@ corpora, codec-round-tripped as in calls: 96 sessions (~4.8 h of frames) for
 training, 24 sessions (~1.3 h) held out for evaluation. Targets are the
 teacher's per-frame 8-vectors; boundary frames are weighted 3× (MSE, equal
 group weighting). 250 + 200 epochs, AdamW with cosine decay. One training
-seed. The rules that turn scores into events (warm-up frames, speech gate,
-silence fallback) live app-side and are unchanged from tyger-s2s's.
+seed. The rules that turn scores into events (warm-up frames, speech gate) live
+app-side and are unchanged from tyger-s2s's. The pipeline's own silence fallback
+is disabled: only the head's ENDPOINT ends a turn.
 
 ### Evaluation (in use)
 

@@ -15,7 +15,7 @@ axis; this doc is about *how turns are decided*, not where the loop runs).
 
 | Option | Turn decisions | Where it runs today | Posture |
 | --- | --- | --- | --- |
-| **classic** | the current behavior: energy endpointing (`\|s16\| > 300`, 800 ms quiet tail) in the remote engines; the Segmenter's 1.2 s no-change commit on-device; greet-on-connect, call cues | remote `live-relay.mjs`; the iOS and mac apps | **the guaranteed fallback** and the improvement target for our own model |
+| **classic** | the current behavior: energy endpointing (`\|s16\| > 300`, 800 ms quiet tail) in the remote engines; the Segmenter's 0.8 s no-change commit on-device; greet-on-connect, call cues | remote `live-relay.mjs`; the iOS and mac apps | **the guaranteed fallback** and the improvement target for our own model |
 | **tyger** | the `nineninesix/tyger` decision model as the turn-taker: per-frame ENDPOINT / BARGE / BACKCHANNEL scores + the tyger rules (warmup, MIN_SPEECH, debounce, backchannel refractory) | remote `live-relay.mjs` (the TS chain in-process: `integrations/eve-idfon-voice/src/tyger/`, bundle verified at `~/.idfon/models/tyger`) | opt-in; wired and gated (below) |
 
 "Classic" names the behavior we already ship. It keeps its UX (greetings, call

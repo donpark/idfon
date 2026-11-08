@@ -62,7 +62,10 @@ code, three ports):
 | BACKCHANNEL | `bc` ≥ 0.5 for 2 frames, then 1.2 s refractory | speaks "mm-hm"; caller keeps the floor; never in history |
 
 Guards in code, not the model: 6 warm-up frames, the voiced-speech minimum, the
-debounce, the backchannel gap, and a 1.2 s silence fallback endpoint. The
+debounce, and the backchannel refractory (1.2 s). The rules layer has **no**
+silence fallback — only the head's ENDPOINT ends a turn. The native apps add a
+separate 0.8 s segmenter fallback (`VoicePromptSegmenter.gap`) for recognizers
+that never emit a final. The
 4-way state machine (`stateDecision`) adds hysteresis via the previous state and
 gates SPEAK on `hazard ≥ θ` (0.2).
 

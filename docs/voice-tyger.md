@@ -76,8 +76,11 @@ Events and the shipped rules (`tyger-s2s/app/plugins/ears/tyger/rules.py`):
 | Backchannel | `bc_thr` 0.40 | bc head fires for `bc_deb` frames, then 1.2 s without another | speaks a "mm-hm"; caller keeps the floor |
 
 Guards live in code, not the model: 6 warm-up frames after reset; the 350 ms voiced-speech
-minimum; a 1.2 s backchannel gap; and a silence fallback endpoint after 1.2 s (tyger-s2s
-leaves the bundle's own fallback off and keeps the rule in `rules.py`). Thresholds are
+minimum; and a 1.2 s backchannel refractory (`bc_refractory: 15` frames — the wait after a
+backchannel before another may fire). There is **no** silence fallback endpoint: only the
+head's ENDPOINT ends a turn (`rules.py`: "only the head ends a turn: there is no silence
+rule"; `plugin.py`: "the bundle's silence fallback isn't used"). The native apps add a
+separate 0.8 s segmenter fallback for recognizers that never emit a final. Thresholds are
 deliberately loose and tuned live with sliders.
 
 Model quality to set expectations (its own evaluation, Open Yap 1K test): endpoint median
@@ -323,8 +326,8 @@ Metrics, on the model card's definitions, so numbers compare:
    first queue policy on the sidecar.
 6. **Licenses:** model OpenMDW 1.1, code Apache-2.0 — fine to run and modify; keep the
    attribution, treat fine-tuned weights as derived data.
-7. **Open:** do we copy their choice of silencing the bundle's silence fallback (rule in
-   code instead)? Recommend yes — it is the guards-in-code rule.
+7. **Open:** do we copy their choice of silencing the bundle's silence fallback and letting
+   only the head's ENDPOINT end a turn? Recommend yes — it is the guards-in-code rule.
 
 ## References
 

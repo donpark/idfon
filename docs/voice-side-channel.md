@@ -536,7 +536,7 @@ stops playback (`tts.stop()`) and becomes the next turn. Hang-up also cancels
 in-flight TTS, so End is immediate even on a long reply.
 `VoicePromptSegmenter` (`ios/Idfon/VoicePromptSegmenter.swift`,
 mirrored for macOS) picks utterance boundaries: a final transcriber result
-commits immediately, and a 1.2 s no-change gap commits the accumulated partial
+commits immediately, and a 0.8 s no-change gap commits the accumulated partial
 as a fallback; committed text is deduped so a late final for the same segment
 isn't sent twice. A failed analyzer is rebuilt once (the LiveSub lesson). Check:
 `swiftc -o /tmp/vpscheck ios/Idfon/VoicePromptSegmenter.swift

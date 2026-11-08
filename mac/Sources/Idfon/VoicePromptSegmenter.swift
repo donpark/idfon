@@ -4,8 +4,8 @@ import Foundation
 ///
 /// - volatile partials update the live display only;
 /// - a final result commits immediately (the transcriber's segment reset);
-/// - if partials stop changing for `gap` seconds the latest text commits as a
-///   fallback;
+/// - if partials stop changing for `gap` seconds (0.8 s) the latest text
+///   commits as a fallback;
 /// - committed text is remembered so a late final for the same segment is not
 ///   sent twice.
 ///
@@ -27,7 +27,13 @@ final class VoicePromptSegmenter {
     var onPartial: ((String) -> Void)?
     var onCommit: ((String) -> Void)?
 
-    init(gap: TimeInterval = 1.2) { self.gap = gap }
+    /// `gap` is the silence fallback when the recognizer never finalizes a
+  /// segment. It is dead air at the end of every turn, so it is as short as a
+  /// mid-sentence pause allows (2026-11-01: 1.2 s + the 0.3 s tick measured
+  /// 1.3–1.5 s `asr_gap_ms` on a live call, the largest single stage); the
+  /// turn model's ENDPOINT (`forceCommit`) and recognizer finals still commit
+  /// earlier when they fire.
+  init(gap: TimeInterval = 0.8) { self.gap = gap }
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in

@@ -87,7 +87,7 @@ the log to the bench agent instead and it does the same parse. Older logs
 without `turn=` markers still report their `listen_ms` values.
 
 Reading it: `asr_gap_ms` dominating → the turn-detection heuristic (its
-constant costs are visible by design: 1.2 s segmenter gap + 800 ms post-roll);
+constant costs are visible by design: 0.8 s segmenter gap + 800 ms post-roll);
 `reply_ms` dominating → compare with §1 (relay RTT + stalls); `speak_ms`
 dominating → TTS backend (Kokoro vs Apple) or device load.
 
