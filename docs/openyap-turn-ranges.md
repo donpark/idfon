@@ -115,8 +115,11 @@ so the licensing is unambiguous; the full-corpus ranges remain internal.
 does not drown the rest: handoff_short, handoff_long, tail_short, tail_long,
 overlap_short, overlap_long, backchannel. Ships as `ranges.jsonl` (the label
 record, keyed to source ranges), `manifest.csv`, 994 clips (366 MB) and a
-listening page with a turn-range rubric. No human has auditioned it yet. The rows
-span 615 conversations of the full DUA corpus, so the sample is internal-only.
+listening page with a turn-range rubric. No human has auditioned it yet: the
+review over the remaining clips was paused because the turn model's measured
+performance did not meet our expectation, so we deferred until the new design
+solidifies. The rows span 615 conversations of the full DUA corpus, so the
+sample is internal-only.
 
 ## Files and disk
 

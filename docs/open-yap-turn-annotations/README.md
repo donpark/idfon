@@ -222,7 +222,10 @@ sample — do not read the mix as the population's.
 ## Caveats
 
 - **No human has auditioned this set.** The labels are transcript-derived plus an
-  audio dominance gate. A listening pass is the next quality step.
+  audio dominance gate. The listening pass over the remaining clips was paused:
+  the turn model's measured performance did not meet our expectation, so we
+  deferred the review until the new design solidifies. The labels are published
+  as-is, without that human check.
 - **The labels are ranges, not verdicts.** A `handoff` marks where a turn ended
   and someone else began, not whether the end was a good stopping point. That
   judgement is the model's, and measuring it is the point of the set.
