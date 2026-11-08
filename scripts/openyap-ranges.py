@@ -190,6 +190,10 @@ def _clip(r: dict, data: str, bdir: str, clip_s: float) -> bool:
     a_f = os.path.join(conv, "speaker_a.flac")
     b_f = os.path.join(conv, "speaker_b.flac")
     if not (os.path.exists(a_f) and os.path.exists(b_f)):
+        # The public sample tar is flat: <conv>.a.flac / <conv>.b.flac.
+        a_f = os.path.join(data, f"{r['conversation_id']}.a.flac")
+        b_f = os.path.join(data, f"{r['conversation_id']}.b.flac")
+    if not (os.path.exists(a_f) and os.path.exists(b_f)):
         return False
     # ch0 = the turn ender (the model's "user"), ch1 = who takes the floor.
     # A row seen from B's turn end puts speaker_b on ch0, so the files swap.

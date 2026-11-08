@@ -28,12 +28,17 @@ Duration median 30.1 min (p10 4.4, p90 75.6, max 252). Relationships: friends
 1,136, colleagues 173, romantic 157, family 136.
 
 The full corpus is under a Data Use Agreement (not redistributable). The public
-16-conversation sample is CC-BY-4.0. **Resolution: we redistribute the
-annotated ranges, never the audio.** A label row names the conversation and the
-clip window, so a reader who already has dataset access re-cuts the audio
-locally. The published v0 bundle (`bench-results/openyap-v0-2026-11-07/`) is
-ranges only, 1.1 MB; the clip set for internal audition lives beside it and is
-not published.
+16-conversation sample is CC-BY-4.0. The creators have confirmed that derived
+annotations may be redistributed as long as no audio is included. **Resolution:
+we publish annotated ranges, never the audio.** A label row names the
+conversation and the clip window, so a reader who has the public sample re-cuts
+the audio locally.
+
+The publishable artifact is `docs/open-yap-turn-annotations/` — 1,716 ranges over
+the 16 public conversations (8.92 h), ranges only, ~1 MB. It is the HF dataset
+`donpark/open-yap-1k-turn-annotations`. The internal 994-row stratified sample
+(`bench-results/openyap-v0-2026-11-07/`, drawn from 615 conversations of the full
+corpus) stays internal; so does its clip set.
 
 ## Event definitions
 
@@ -95,14 +100,23 @@ Both together keep 35% of all candidate ranges.
 Gated by kind: overlap 110,846 · silent_tail 26,892 · handoff 23,287 ·
 backchannel 407. 1,602 conversations.
 
-## The v0 release sample
+## The published release
+
+`docs/open-yap-turn-annotations/` — 1,716 ranges over the 16 public conversations
+(8.92 h), built by `scripts/openyap-publish.py` from the gated manifest. Ships as
+`ranges.jsonl`, `manifest.csv`, `validation.json`, `SHA256SUMS`, a dataset card,
+the source licence and a notice. No audio. The public 16 are the CC-BY-4.0 sample,
+so the licensing is unambiguous; the full-corpus ranges remain internal.
+
+## The internal v0 sample
 
 `bench-results/openyap-v0-2026-11-07/` — 994 clips, 142 per stratum, drawn by
 `scripts/openyap-v0.py`. Equal counts per stratum so the 69% overlap population
 does not drown the rest: handoff_short, handoff_long, tail_short, tail_long,
 overlap_short, overlap_long, backchannel. Ships as `ranges.jsonl` (the label
 record, keyed to source ranges), `manifest.csv`, 994 clips (366 MB) and a
-listening page with a turn-range rubric. No human has auditioned it yet.
+listening page with a turn-range rubric. No human has auditioned it yet. The rows
+span 615 conversations of the full DUA corpus, so the sample is internal-only.
 
 ## Files and disk
 
@@ -237,8 +251,11 @@ TYGER_BUNDLE=... $V scripts/openyap-score.py \
 
 ## Open questions
 
-- **Redistribution.** Settled: annotated ranges publish, audio does not. The
-  published bundle is ranges only; clips stay internal.
+- **Redistribution.** Settled: the creators confirmed annotated ranges publish,
+  audio does not. The public release is ranges only; clips stay internal.
+- **The public sample's kind mix.** 1,716 gated ranges over 16 conversations:
+  overlap 1,159, handoff 301, silent_tail 255, backchannel 1. It is the gated
+  population, not a balanced sample; the backchannel count is too low to train on.
 - **The negative class.** A detector trained on positives only learns where the
   labels are. Negatives should be labelled at the same decision opportunities —
   `overlap` is the natural hard negative for "the turn ended".
