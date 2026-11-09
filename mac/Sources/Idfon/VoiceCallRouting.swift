@@ -24,9 +24,10 @@ struct VoiceOption: Equatable {
 
     init?(json: [String: Any]) {
         guard let id = json["id"] as? String,
-              let rawKind = json["kind"] as? String,
-              let kind = Kind(rawValue: rawKind),
-              let label = json["label"] as? String else { return nil }
+            let rawKind = json["kind"] as? String,
+            let kind = Kind(rawValue: rawKind),
+            let label = json["label"] as? String
+        else { return nil }
         self.id = id
         self.kind = kind
         self.label = label
@@ -50,11 +51,15 @@ enum VoiceCatalog {
     /// The contact's options, or `[]` when the agent advertises none (older
     /// agent, unreachable) — the caller then falls back to the signed route.
     /// The fetch is bounded: a hung gateway must not stall the call decision.
-    static func options(for peerID: String, client: DaemonClient,
-                        timeout: Duration = .seconds(3)) async -> [VoiceOption] {
+    static func options(
+        for peerID: String, client: DaemonClient,
+        timeout: Duration = .seconds(3)
+    ) async -> [VoiceOption] {
         if let cached = cache[peerID] { return cached }
         let data = await withTaskGroup(of: Data?.self) { group in
-            group.addTask { try? await client.fetchRemoteResource(account: peerID, path: "/idfon.json") }
+            group.addTask {
+                try? await client.fetchRemoteResource(account: peerID, path: "/idfon.json")
+            }
             group.addTask {
                 try? await Task.sleep(for: timeout)
                 return nil
@@ -64,9 +69,10 @@ enum VoiceCatalog {
             return first
         }
         guard let data,
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let voice = root["voice"] as? [String: Any],
-              let raw = voice["options"] as? [[String: Any]] else {
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let voice = root["voice"] as? [String: Any],
+            let raw = voice["options"] as? [[String: Any]]
+        else {
             return []
         }
         let options = raw.compactMap(VoiceOption.init(json:))
@@ -93,7 +99,9 @@ enum ContactMenus {
     static func menu(for peerID: String, client: DaemonClient) async -> ContactMenu? {
         if let cached = cache[peerID] { return cached }
         let data = await withTaskGroup(of: Data?.self) { group in
-            group.addTask { try? await client.fetchRemoteResource(account: peerID, path: "/idfon.json") }
+            group.addTask {
+                try? await client.fetchRemoteResource(account: peerID, path: "/idfon.json")
+            }
             group.addTask {
                 try? await Task.sleep(for: .seconds(3))
                 return nil
@@ -103,15 +111,18 @@ enum ContactMenus {
             return first
         }
         guard let data,
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let menu = root["menu"] as? [String: Any],
-              let ref = (menu["opml"] as? String)?.trimmingCharacters(in: .whitespaces),
-              !ref.isEmpty else {
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let menu = root["menu"] as? [String: Any],
+            let ref = (menu["opml"] as? String)?.trimmingCharacters(in: .whitespaces),
+            !ref.isEmpty
+        else {
             cache[peerID] = .some(nil)
             return nil
         }
-        guard let document = await fetchOPML(ref, peerID: peerID, client: client)
-            .flatMap(MenuDocument.parse), !document.entries.isEmpty else {
+        guard
+            let document = await fetchOPML(ref, peerID: peerID, client: client)
+                .flatMap(MenuDocument.parse), !document.entries.isEmpty
+        else {
             cache[peerID] = .some(nil)
             return nil
         }
@@ -126,7 +137,9 @@ enum ContactMenus {
 
     /// A leading slash is a resource on the contact's own holder; anything
     /// else must be an http(s) URL (an online station's public OPML).
-    private static func fetchOPML(_ ref: String, peerID: String, client: DaemonClient) async -> Data? {
+    private static func fetchOPML(_ ref: String, peerID: String, client: DaemonClient) async
+        -> Data?
+    {
         if ref.hasPrefix("/") {
             return try? await client.fetchRemoteResource(account: peerID, path: ref)
         }
@@ -145,7 +158,8 @@ enum ContactVoiceSelection {
     private static let key = "idfon.voice-selection"
 
     static func selection(for peerID: String) -> (stt: String?, tts: String?) {
-        let table = UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
+        let table =
+            UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
         let entry = table[peerID] ?? [:]
         return (entry["stt"], entry["tts"])
     }
@@ -157,12 +171,14 @@ enum ContactVoiceSelection {
 
     static func set(slot: SpeechSlot, value: String?, for peerID: String) {
         let (stt, tts) = selection(for: peerID)
-        set(stt: slot == .recognition ? value : stt,
+        set(
+            stt: slot == .recognition ? value : stt,
             tts: slot == .generation ? value : tts, for: peerID)
     }
 
     static func set(stt: String?, tts: String?, for peerID: String) {
-        var table = UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
+        var table =
+            UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
         var entry = table[peerID] ?? [:]
         if let stt { entry["stt"] = stt } else { entry.removeValue(forKey: "stt") }
         if let tts { entry["tts"] = tts } else { entry.removeValue(forKey: "tts") }
@@ -171,7 +187,8 @@ enum ContactVoiceSelection {
     }
 
     static func remove(for peerID: String) {
-        var table = UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
+        var table =
+            UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
         table.removeValue(forKey: peerID)
         UserDefaults.standard.set(table, forKey: key)
     }
@@ -211,7 +228,8 @@ enum ContactOnDeviceEngines {
     }
 
     static func set(slot: SpeechSlot, value: String?, for peerID: String) {
-        set(asr: slot == .recognition ? value : asr(for: peerID),
+        set(
+            asr: slot == .recognition ? value : asr(for: peerID),
             tts: slot == .generation ? value : tts(for: peerID), for: peerID)
     }
 
@@ -290,7 +308,11 @@ enum ContactVoiceTurnModes {
     static func set(_ mode: VoiceTurnMode, for peerID: String) {
         var next = table()
         // Passive is the default, so it is stored as absence.
-        if mode == .passive { next.removeValue(forKey: peerID) } else { next[peerID] = mode.rawValue }
+        if mode == .passive {
+            next.removeValue(forKey: peerID)
+        } else {
+            next[peerID] = mode.rawValue
+        }
         UserDefaults.standard.set(next, forKey: key)
     }
 
@@ -321,13 +343,17 @@ struct SpeechChoice: Equatable {
 /// and `ContactVoiceSelection`) so one Recognition/Generation picker spans both.
 /// When there is no stored pick, the signed route owns the default engine.
 enum ContactSpeech {
-    static func defaultChoice(slot: SpeechSlot, route: VoiceRoute?, catalog: [VoiceOption],
-                              localId: String, localTitle: String) -> SpeechChoice {
+    static func defaultChoice(
+        slot: SpeechSlot, route: VoiceRoute?, catalog: [VoiceOption],
+        localId: String, localTitle: String
+    ) -> SpeechChoice {
         let remote = slot == .recognition ? route?.sttSide == .server : route?.ttsSide == .server
         guard remote else { return SpeechChoice(store: .onDevice, id: localId, title: localTitle) }
         let kind: VoiceOption.Kind = slot == .recognition ? .stt : .tts
-        let defaults = catalog.filter { ($0.kind == kind || $0.fillsBothSlots) && $0.side == .server }
-        let title = defaults.count == 1 ? "Agent default — \(defaults[0].label)" : "Agent default (remote)"
+        let defaults = catalog.filter {
+            ($0.kind == kind || $0.fillsBothSlots) && $0.side == .server
+        }
+        let title = defaults.count == 1 ? "\(defaults[0].label)" : "Agent default"
         return SpeechChoice(store: .agentDefault, id: "agent-default", title: title)
     }
 
@@ -343,7 +369,9 @@ enum ContactSpeech {
 
     /// Persist `pick` for `slot`, clearing the other store for that half. A
     /// catalog full-duplex option fills both halves. `nil` clears both stores.
-    static func set(_ pick: SpeechChoice?, catalog: [VoiceOption], for peerID: String, slot: SpeechSlot) {
+    static func set(
+        _ pick: SpeechChoice?, catalog: [VoiceOption], for peerID: String, slot: SpeechSlot
+    ) {
         guard let pick else {
             ContactOnDeviceEngines.set(slot: slot, value: nil, for: peerID)
             ContactVoiceSelection.set(slot: slot, value: nil, for: peerID)
@@ -388,12 +416,14 @@ enum VoiceCallDecision: Equatable {
 enum VoiceCallRouting {
     /// Resolve the call plan from the per-contact selection (option ids from
     /// the catalog), the signed route, and the legacy heuristic.
-    static func decide(selection: (stt: String?, tts: String?),
-                       onDevice: (stt: String?, tts: String?) = (nil, nil),
-                       catalog: [VoiceOption],
-                       signed: VoiceRoute?,
-                       holderTicket: Bool,
-                       legacyRemote: Bool) -> VoiceCallDecision {
+    static func decide(
+        selection: (stt: String?, tts: String?),
+        onDevice: (stt: String?, tts: String?) = (nil, nil),
+        catalog: [VoiceOption],
+        signed: VoiceRoute?,
+        holderTicket: Bool,
+        legacyRemote: Bool
+    ) -> VoiceCallDecision {
         let chosen = [selection.stt, selection.tts]
             .compactMap { $0 }
             .compactMap { id in catalog.first { $0.id == id } }
@@ -463,12 +493,16 @@ extension VoiceRoute {
     /// Override the signed half-ownership with the contact's picks: an
     /// on-device pick makes that half client-owned; a catalog pick uses its
     /// option side. Halves with no pick keep the signed route's ownership.
-    func resolving(selection: (stt: String?, tts: String?),
-                   onDevice: (stt: String?, tts: String?),
-                   catalog: [VoiceOption]) -> VoiceRoute {
+    func resolving(
+        selection: (stt: String?, tts: String?),
+        onDevice: (stt: String?, tts: String?),
+        catalog: [VoiceOption]
+    ) -> VoiceRoute {
         func half(_ onDevice: String?, _ selected: String?) -> VoiceHalf? {
             if onDevice != nil { return .client }
-            guard let selected, let option = catalog.first(where: { $0.id == selected }) else { return nil }
+            guard let selected, let option = catalog.first(where: { $0.id == selected }) else {
+                return nil
+            }
             return option.side == .client ? .client : .server
         }
         return VoiceRoute(

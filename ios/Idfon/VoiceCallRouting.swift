@@ -327,7 +327,7 @@ enum ContactSpeech {
         guard remote else { return SpeechChoice(store: .onDevice, id: localId, title: localTitle) }
         let kind: VoiceOption.Kind = slot == .recognition ? .stt : .tts
         let defaults = catalog.filter { ($0.kind == kind || $0.fillsBothSlots) && $0.side == .server }
-        let title = defaults.count == 1 ? "Agent default — \(defaults[0].label)" : "Agent default (remote)"
+        let title = defaults.count == 1 ? "\(defaults[0].label)" : "Agent default"
         return SpeechChoice(store: .agentDefault, id: "agent-default", title: title)
     }
 

@@ -464,15 +464,22 @@ fn start_live(
     if !audio && !video {
         anyhow::bail!("at least one media track is required");
     }
+    tracing::info!(target: "idfon.media", audio, video, "live publisher start entered");
     let result = tokio_executor(async move {
-        let live = Live::from_env().await?.spawn();
+        let setup_started = std::time::Instant::now();
+        tracing::info!(target: "idfon.media", "live endpoint setup begin");
+        let builder = Live::from_env().await?;
+        tracing::info!(target: "idfon.media", elapsed_ms = setup_started.elapsed().as_millis() as u64, "live endpoint setup returned");
+        let live = builder.spawn();
         // Accept-side routing (MoQ + the health ALPN) comes from the health
         // module's router (docs/media-adaptation.md §B2.2).
         crate::health::ensure_served(&live);
         let name = format!("idfon-live-{}", std::process::id());
         let mut combined_broadcast = None;
         if audio || video {
+            tracing::info!(target: "idfon.media", "live broadcast creation begin");
             let broadcast = live.publish(&name)?;
+            tracing::info!(target: "idfon.media", "live broadcast created");
             if audio {
                 let mut options = call_options(codec, sample_rate, channels, video)?;
                 // Audio ABR (docs/media-adaptation.md §C5): drive the encoder
@@ -509,6 +516,7 @@ fn start_live(
             }
             combined_broadcast = Some(broadcast);
         }
+        tracing::info!(target: "idfon.media", "live track setup complete; creating ticket");
         let ticket = LiveTicket::new(live.endpoint().id(), &name).serialize();
         LIVE.lock()
             .expect("live mutex poisoned")
@@ -519,6 +527,7 @@ fn start_live(
             });
         anyhow::Ok(ticket)
     });
+    tracing::info!(target: "idfon.media", success = result.is_ok(), "live publisher start returned");
     match result {
         Ok(ticket) => {
             *LAST_ERROR.lock().expect("error poisoned") = None;

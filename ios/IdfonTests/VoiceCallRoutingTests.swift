@@ -34,7 +34,7 @@ final class VoiceCallRoutingTests: XCTestCase {
         XCTAssertEqual(
             ContactSpeech.defaultChoice(slot: .recognition, route: route(.serverCascade), catalog: [deepgram],
                                         localId: "nemotron", localTitle: "Nemotron Streaming"),
-            SpeechChoice(store: .agentDefault, id: "agent-default", title: "Agent default — Deepgram Nova-3"))
+            SpeechChoice(store: .agentDefault, id: "agent-default", title: "Deepgram Nova-3"))
         XCTAssertEqual(
             ContactSpeech.defaultChoice(slot: .recognition, route: route(.clientCascade), catalog: [deepgram],
                                         localId: "nemotron", localTitle: "Nemotron Streaming"),

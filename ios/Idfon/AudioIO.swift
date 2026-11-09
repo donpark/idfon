@@ -386,9 +386,11 @@ final class AudioIO: AudioSource, AudioSink {
             engine.connect(playbackMixer, to: engine.mainMixerNode, format: nil)
         }
         engine.prepare()
+        Automation.mark("audio: engine start begin profile=\(String(describing: profile))")
         do {
             try engine.start()
             running = true
+            Automation.mark("audio: engine start returned isRunning=\(engine.isRunning)")
             startRetries = 0
             recoveryNoticePosted = false
             Automation.mark("audio: started profile=\(String(describing: profile))")
@@ -598,8 +600,10 @@ final class AudioIO: AudioSource, AudioSink {
             startEngine()
             return
         }
+        Automation.mark("audio: engine recovery start begin running=\(running)")
         do {
             try engine.start()
+            Automation.mark("audio: engine recovery start returned isRunning=\(engine.isRunning)")
             startRetries = 0
             recoveryNoticePosted = false
             playbackPlayer.stop()
@@ -785,6 +789,14 @@ final class AudioIO: AudioSource, AudioSink {
                 activeLoop = loop
                 playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
                 Automation.mark("audio: loop re-armed after engine restart")
+                Self.queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self else { return }
+                    let clock = self.playbackPlayer.lastRenderTime.flatMap {
+                        self.playbackPlayer.playerTime(forNodeTime: $0)
+                    }
+                    Automation.mark(
+                        "audio: re-armed loop render sampleTime=\(clock.map { String($0.sampleTime) } ?? "nil") playing=\(self.playbackPlayer.isPlaying) engine=\(self.engine.isRunning)")
+                }
             } else {
                 activeLoop = nil
             }
@@ -848,43 +860,47 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     func playLooping(_ buffer: AVAudioPCMBuffer) {
-        guard running else {
-            // Engine not up yet (CallKit deferred start): stash the loop —
-            // `startEngine` re-arms it exactly like an engine restart.
-            if let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) {
-                activeLoop = converted
-                isPlaying = true
-                Automation.mark("audio: loop play deferred engine idle")
-            } else {
-                Automation.mark("audio: loop play dropped engine idle")
+        // Keep this ordered with start/stop: a queued stopPlayback must not run
+        // after an idle-engine loop has been re-armed and silence the new tone.
+        runOnAudio { [self] in
+            settleFadeNow()
+            guard running else {
+                // Engine not up yet (CallKit deferred start): stash the loop —
+                // `startEngine` re-arms it exactly like an engine restart.
+                if let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) {
+                    activeLoop = converted
+                    isPlaying = true
+                    Automation.mark("audio: loop play deferred engine idle")
+                } else {
+                    Automation.mark("audio: loop play dropped engine idle")
+                }
+                return
             }
-            return
-        }
-        guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
-        else {
-            Automation.mark("audio: loop play dropped convert failed in=\(buffer.format.sampleRate)Hz/\(buffer.format.channelCount)ch")
-            return
-        }
-        settleFadeNow()
-        playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
-        fanOutPlayback(converted) // the second ear (a looping ring: fed once)
-        activeLoop = converted
-        isPlaying = true
-        if !playbackPlayer.isPlaying { playbackPlayer.play() }
-        // The ring is the canary: prove the loop was real (non-silent PCM) and
-        // that the engine actually rendered it — a scheduled-but-never-rendered
-        // buffer logs exactly like a played one otherwise.
-        Automation.mark(
-            "audio: loop scheduled frames=\(converted.frameLength) rms=\(String(format: "%.4f", Self.rms(converted))) fmt=\(converted.format.sampleRate)Hz/\(converted.format.channelCount)ch")
-        markOutput("output at ring")
-        Self.queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            // nil lastRenderTime = the node never rendered at all.
-            let clock = self.playbackPlayer.lastRenderTime.flatMap {
-                self.playbackPlayer.playerTime(forNodeTime: $0)
+            guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
+            else {
+                Automation.mark("audio: loop play dropped convert failed in=\(buffer.format.sampleRate)Hz/\(buffer.format.channelCount)ch")
+                return
             }
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
+            fanOutPlayback(converted) // the second ear (a looping ring: fed once)
+            activeLoop = converted
+            isPlaying = true
+            if !playbackPlayer.isPlaying { playbackPlayer.play() }
+            // The ring is the canary: prove the loop was real (non-silent PCM) and
+            // that the engine actually rendered it — a scheduled-but-never-rendered
+            // buffer logs exactly like a played one otherwise.
             Automation.mark(
-                "audio: loop check sampleTime=\(clock.map { String($0.sampleTime) } ?? "nil") playing=\(self.playbackPlayer.isPlaying) engine=\(self.engine.isRunning)")
+                "audio: loop scheduled frames=\(converted.frameLength) rms=\(String(format: "%.4f", Self.rms(converted))) fmt=\(converted.format.sampleRate)Hz/\(converted.format.channelCount)ch")
+            markOutput("output at ring")
+            Self.queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self else { return }
+                // nil lastRenderTime = the node never rendered at all.
+                let clock = self.playbackPlayer.lastRenderTime.flatMap {
+                    self.playbackPlayer.playerTime(forNodeTime: $0)
+                }
+                Automation.mark(
+                    "audio: loop check sampleTime=\(clock.map { String($0.sampleTime) } ?? "nil") playing=\(self.playbackPlayer.isPlaying) engine=\(self.engine.isRunning)")
+            }
         }
     }
 

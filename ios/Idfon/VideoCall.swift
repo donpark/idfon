@@ -338,7 +338,8 @@ final class VideoCall: NSObject {
     /// the Bar's camera toggle is switched on — the default for calls started
     /// from the nav bar (mic first).
     func dial(_ peerRef: String, audio: Bool = true, video: Bool = true, cameraOn: Bool = true) {
-        Automation.mark("video: dial ref=\(peerRef) audio=\(audio) video=\(video)")
+        let mode = IncomingCallRouter.shared.mode(for: peerRef)
+        Automation.mark("video: dial ref=\(peerRef) audio=\(audio) video=\(video) callMode=\(mode.rawValue)")
         guard case .idle = life.phase, audio || video else {
             CallFeedback.post("A call is already in progress.")
             return
@@ -346,10 +347,12 @@ final class VideoCall: NSObject {
         // `call_kit` channels dial through the system call UI — CallKit owns
         // the whole call lifecycle, both directions (docs/callkit-integration.md).
         if IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
+            Automation.mark("video: outgoing presentation=CallKit")
             CallKitController.shared.startOutgoing(peerId: peerRef, video: true) { [weak self] in
                 self?.dialNow(peerRef, audio: audio, video: video, cameraOn: cameraOn)
             }
         } else {
+            Automation.mark("video: outgoing presentation=Bar")
             dialNow(peerRef, audio: audio, video: video, cameraOn: cameraOn)
         }
     }
@@ -389,12 +392,14 @@ final class VideoCall: NSObject {
                 // Swift owns capture while the media bridge owns transport.
                 let identity = (try? await client.status())?.1 ?? "default"
                 let peerBytes = Array(id.utf8.map { AnyEncodable(Int($0)) })
+                Automation.mark("video: media session start begin")
                 _ = try await client.request(method: "media.session.start", params: [
                     "identity": AnyEncodable(identity),
                     "peer_bytes": AnyEncodable(peerBytes),
                     "kind": AnyEncodable("live_video"),
                     "mode": AnyEncodable("record"),
                 ])
+                Automation.mark("video: media session start returned")
                 activateAudioSession()
                 if audio {
                     guard await AudioPusher.shared.startForCall() else {
@@ -405,17 +410,22 @@ final class VideoCall: NSObject {
                 // A decline/remote stop can land while the mic starts; capture
                 // brought up after teardown would stay on for good.
                 guard life.epoch == epoch else {
+                    Automation.mark("video: dial canceled during mic start epoch=\(life.epoch) expected=\(epoch)")
                     abandonLateStart()
                     return
                 }
+                Automation.mark("video: mic ready epoch=\(life.epoch)")
                 if video && cameraOn { CameraPusher.shared.start() }
                 // Publish both tracks regardless of the staged stream set so
                 // either stream can be toggled on later in the call. The
                 // panel's audio mode picks the audio layout (docs/stereo-calls.md).
                 let channels = AudioIO.captureChannelsForCall()
+                Automation.mark("video: native publisher start begin channels=\(channels)")
+                let publishStarted = Date()
                 let ticket = await ffiString {
                     media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
                 }
+                Automation.mark("video: native publisher start returned ticket=\(!ticket.isEmpty) elapsed_ms=\(Int(Date().timeIntervalSince(publishStarted) * 1_000))")
                 // Checked before the failure branch: `fail` ends whichever call
                 // the machine holds now, and this publish belongs to a dead one.
                 guard life.epoch == epoch else {

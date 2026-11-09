@@ -150,8 +150,23 @@ with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])
 PY
 )
+# Model selection is compiled into Eve's agent manifest, so instances sharing
+# one agent source must rebuild when their configured model differs.
+compiled_model=""
+model_manifest="$agent_dir/.output/server/_chunks/node-server.mjs"
+if [ -f "$model_manifest" ]; then
+  compiled_model=$(python3 - "$model_manifest" "$agent" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+name = re.escape(f"idfon-eve-{sys.argv[2]}")
+match = re.search(r'"name"\s*:\s*"' + name + r'"[\s\S]*?"model"\s*:\s*\{\s*"id"\s*:\s*"([^"]+)"', text)
+print(match.group(1) if match else "")
+PY
+)
+fi
 # Build in place when missing or stale (`pnpm agent build` does the same).
-if [ ! -d "$agent_dir/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
+if [ ! -d "$agent_dir/.output" ] || [ "$compiled_model" != "$model" ] || \
+   [ "${FORCE_BUILD:-}" = 1 ] || \
    [ "$agent_dir/package.json" -nt "$agent_dir/.output" ] || \
    [ -n "$(find "$agent_dir/agent" -newer "$agent_dir/.output" -print -quit 2>/dev/null)" ] || \
    [ -n "$(find "$integration/dist" -newer "$agent_dir/.output" -print -quit 2>/dev/null)" ]; then
