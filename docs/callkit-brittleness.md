@@ -100,6 +100,10 @@ real but the failing stage is not established.
 | C12 | LLM text arrived without agent voice | **Root cause confirmed.** The active holder uses `agents/voice/live.json` with `server-cascade`, matching the signed ticket. Its relay TTS returned HTTP 401 `quota_exceeded`: 1 credit remained while greeting/reply requests needed 5–66 credits. The bridge/LLM still produced text, but speech synthesis failed. Don has since selected on-device Nemotron STT and Phonon TTS for this contact; device verification is pending. | Verify that the on-device selection owns both audio halves on the next call; it should bypass the server relay's ElevenLabs TTS. |
 | C13 | No visibility into LLM token supply or usage | **Sequential model routing is now rebuilt per instance; token-usage gap remains.** The Gemini `voice` instance was rebuilt with `google/gemini-3.8-flash`; starting `gpt6luna` detected the shared manifest mismatch and rebuilt it to `openai/gpt-6-luna` (`gateway`, target `openai`). The already-running voice process was left up. No per-turn token counts or gateway usage receipts are available. Vercel did not run out during this incident. | Add redacted per-turn provider/model, request ID, input/output token usage, and remaining budget when available. Never log prompt contents or credentials. The build output is shared, so do not start different model instances concurrently. |
 
+| C15 | Persistent no-ring that survives code fixes | **Hypothesis; oracle-verified mechanism (2026-11-09).** Apple DTS: roughly 5 VoIP pushes that end in no reported call within ~24 h and iOS stops delivering background VoIP pushes to the app on that device (`VoIP push for app … dropped on the floor`); the counter clears via a daily `Ran nightly VOIP reconciliation` maintenance task (24–48 h+, later on busy devices), by reinstall, probably by app update. No query API, no APNs error. Fits "worked, then stopped a few days ago, still broken after the C6 fix": the C6 window sent *no* pushes, so feeders predate it (e.g. the #61 wedge class — push arrives with main wedged, delegate never runs, `0xbaadca11` kill counts as a failure). | Sysdiagnose immediately after a failed ring; grep `callservicesd`/`apsd` for the signatures above; then reinstall (or wait 48 h) and retest — rings again ⇒ suppression was the cause. |
+| C16 | Report-skip paths can feed the suppression counter | **Code risk, not yet observed.** `CallKitController.presentIncoming` early-returns with no `reportNewIncomingCall` on `skip_redelivery` (same UUID), `skip_busy`, `skip_no_ids`; classic-delegate pushes carry `mustReport=true` unconditionally. Apple DTS: re-report the existing call UUID and let the duplicate rejection satisfy the contract — returning early "because my state says already-handled" is unsafe. | Report-and-let-reject on duplicate UUID; report-then-end for busy/no-ids pushes that must report. |
+| C17 | Call invites have no multi-device failover | **Code fact.** `message.send` default delivery is One mode: `targets.truncate(1)` then `break` on error (`crates/idfon-daemon` `send`) — only the primary dial target is tried; `All` is the only failover mode. Call invites (`IdfonClient.sendText`) pass no policy → One. A stale primary (rotated endpoint) makes the invite unreachable while the account-keyed push still rings the phone → the 20 s pending-answer guard kills the call ("rings but answering drops it"). | Calls get their own delivery policy: fan out to all eligible devices, one explicit acceptance wins (RingRTC / `m.call.select_answer` pattern), late or duplicate accepts harmless. |
+| C18 | Edge push ops gaps | **Code facts.** No `apns-expiration` on fan-out (late pushes cause ghost rings); `410 Unregistered` / `400 BadDeviceToken` never prune `PushStore` (dead tokens linger); environment routing flips only on the `BadEnvironmentKeyInToken` string (oracle: the documented mismatch reason is `BadDeviceToken`, and `BadEnvironmentKeyIdInToken` is a provider-key error — match raw reasons broadly, or register the env explicitly per token from the app's `aps-environment`). | Short expiry; prune on 410/BadDeviceToken; explicit per-token env; keep the flip as fallback. |
 | C14 | gpt6luna contact did not answer | **Root cause confirmed; service restored.** At 07:29:42 UTC, iOS sent to peer `89f71f…` (the `GPT-6-Luna` contact); messages `msg_628` and `msg_629` failed with `connect timed out after 10s`. All processes in `~/.idfon/gpt6luna` were stopped. I restarted that instance with its existing holder key and pinned port 58159, preserving endpoint `89f71f…`; its Eve process is now `openai/gpt-6-luna` and bridge health is 200. The separate `~/.idfon/llm` endpoint `b0766318…` is the `eve` contact, not `gpt6luna`. | Verify the next user-placed call reaches the restarted service and Phonon speaks the reply. No re-pair is needed. |
 
 These are distinct failure classes: a Bar-mode call has no push by design; an APNs
@@ -166,6 +170,71 @@ is the `google/gemini-3.8-flash` model selected in caller metadata for the local
 - Don has changed the contact's STT/TTS selections to on-device Nemotron/Phonon.
   That should make the caller own both audio halves and bypass relay TTS; verify
   on the next call. Vercel did not run out of tokens during the previous incident.
+
+## Platform semantics (oracle-verified, 2026-11-09)
+
+Two `gpt-6.1-sol` oracle consultations (Apple push/call semantics; stable
+addressing over rotating endpoints) plus a code audit. Verdicts marked
+**documented** (Apple docs/WWDC), **DTS** (Apple engineer statements,
+empirical), or **practice** (industry systems).
+
+**Apple side:**
+
+- **Report timing (documented):** `reportNewIncomingCall` must be submitted
+  inline in the PushKit delegate before it returns (WWDC19 "Advances in App
+  Background Execution"). An independent `callservicesd` check ~7 s after
+  delivery kills with `0xbaadca11`. The PushKit completion handler does not
+  substitute for reporting.
+- **Report-then-end (documented):** fully satisfies the obligation for
+  stale/cancelled calls; no minimum ring duration. Duplicate push for an
+  already-reported call: re-report the same UUID and let the duplicate
+  rejection count (DTS) — early return is unsafe (see C16).
+- **`mustReport` (documented, iOS 26.4+):** the system's own marker. Classic
+  delegates must assume every push needs a report.
+- **Delivery suppression (DTS):** see C15 — the top suspect when no-ring
+  persists across code fixes. Force-quit (swipe-away): VoIP pushes normally
+  still relaunch the app (empirical; matches our E2E). Focus/DND can suppress
+  ringing without any delegate failure; triage stages stay separate — APNs
+  accepted → device received → delegate entered → report result → ringing →
+  connection.
+- **Tokens (documented/DTS):** `didUpdate`/`didInvalidatePushTokenFor` are
+  authoritative; APNs `200` proves acceptance only (DTS: uninstalled apps can
+  still 200); `410 Unregistered` carries a ms timestamp and must prune the
+  registration (C18).
+- **Environment (documented):** the *receiving* app's signed `aps-environment`
+  decides sandbox vs production (dev profile → sandbox; TestFlight/App
+  Store/ad-hoc/enterprise → production). A dual-environment `.p8` does not
+  make a token valid in both. Inspect the installed app's entitlements.
+- **Ops (documented):** `apns-expiration: 0` or a few seconds for calls;
+  payload ≤ 5120 bytes; provider JWT refresh ≥ 20 min apart (ours: 50 min,
+  good); test without a debugger attached. Cancel/update pushes are against
+  Apple guidance (use the post-ring connection) — P2P has no such connection;
+  keep them, but every one must end in a reported call.
+
+**Addressing side (the "handles" question):**
+
+- The account-key handle model (`docs/multi-device.md`: account signing key +
+  signed device set + per-device transport keys) is the right shape — the same
+  separation as Signal ACI/devices, Matrix MXID/device_keys, SIP
+  address-of-record/contacts. **No further username/DNS/WebFinger layer is
+  justified** for private manual contacts; reachability comes from current
+  registration, not a nicer name.
+- What a signed device set does **not** give: freshness and reachability. The
+  industry repair for a stale roster is **rendezvous + a short-lived pending
+  signaling record** (SIP RFC 8599 "push bucket": hold the request, push, wait
+  for the client to re-register, forward). Ranked for idfon: account-keyed
+  edge lookup > short-lived pending-call mailbox > proactive signed roster
+  updates > authenticated inbound learning > re-pairing.
+- **Multi-device call semantic (practice: RingRTC, Matrix
+  `m.call.select_answer`, SIP forking):** offer to all eligible devices in
+  parallel; exactly one *explicit user acceptance* arbitrates; losers end
+  "answered elsewhere"; transport ack ≠ human acceptance. Calls must not
+  inherit the generic sender's first-target-only policy (C17).
+- **Ring must be self-sufficient (documented Apple shape):** the push carries
+  enough to present the call; Answer is an intent to connect; signaling rides
+  the edge while iroh connects; end truthfully if setup fails. The honest
+  promise: *a valid call rings even when P2P signaling has not succeeded* —
+  not *a call connects when every path fails*.
 
 ## Where the implementation is brittle
 
@@ -251,6 +320,17 @@ parts of the stack; it cannot make iOS's background execution model disappear.
 
 ### P0 — Close the current observability gap
 
+- **Verify or kill the suppression hypothesis first (C15):** sysdiagnose after
+  a failed locked-screen ring, grep `callservicesd`/`apsd` for the
+  `dropped on the floor` / `failed to report` / `nightly VOIP reconciliation`
+  signatures; then reinstall (or wait 48 h) and retest. This decides whether
+  any code change can help at all.
+- **Harden the report path (C16):** every push that must report ends in a
+  `reportNewIncomingCall` call — duplicate UUIDs re-report and let the
+  rejection count; busy/no-ids pushes report-then-end.
+- **Edge push ops (C18):** short `apns-expiration`, prune tokens on
+  410/BadDeviceToken, explicit per-token environment.
+
 - Log before and after `media_live_start_with_profile`, including elapsed time,
   returned-ticket presence, and `media_live_last_error`.
 - Check whether the native FFI call itself can block without a deadline. A Swift
@@ -272,6 +352,16 @@ the media ticket separately when it becomes available. The receiver may present 
 CallKit ring immediately, retain an early answer, and join only when the media offer
 arrives. If publishing fails, send an explicit cancel/end for the same UUID. Keep
 media authorization ticket-based; the call UUID is correlation, not authority.
+
+Extend the edge's `/_push/*` service into the **pending-call rendezvous** the
+wake needs (oracle 2, 2026-11-09): the caller submits an authenticated,
+expiring call record addressed to the account *before* ringing; the edge
+persists it, fans the ring out; the woken callee pulls the record and answers
+with its **current endpoint** (or connects outbound to the caller) — so the
+call survives a stale roster, endpoint rotation, and slow media startup
+(SIP RFC 8599 push-bucket shape). Offer to **all** eligible devices in
+parallel with one explicit acceptance winning; transport acks never stop the
+account-level ring.
 
 This is a protocol/state-machine change. It must preserve: same-UUID dedupe between
 PushKit and iroh, PushKit's report-before-completion rule, answer-before-offer,
@@ -313,7 +403,12 @@ separate call-attempt signaling from media-ticket readiness if locked-screen
 ringing must work even when media startup is slow. Keep Bar as the intentionally
 limited low-complexity mode.
 
+**Endpoint rotation is not the primary no-ring cause:** the account-keyed push
+registry already survives it. The real gaps are roster freshness, invite fan-out
+(C17), and the platform-side suppression state (C15) — see "Platform semantics"
+and `docs/multi-device.md` for the handles verdict.
+
 **Primary references:** `ios/Idfon/IncomingCallRouter.swift`,
 `ios/Idfon/VideoCall.swift` (`dialNow`), `ios/Idfon/PushWake.swift`,
 `ios/Idfon/CallKitController.swift`, `docs/callkit-integration.md`,
-`docs/troubleshooting.md`.
+`docs/multi-device.md`, `docs/troubleshooting.md`.

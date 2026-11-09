@@ -268,7 +268,8 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     callUUID: callUUID,
                     callerId: dict["caller_id"] as? String ?? "",
                     hasVideo: (dict["has_video"] as? Bool) ?? false,
-                    endImmediately: true)
+                    endImmediately: true,
+                    mustReport: mustReport)
                 Diag.log("wake", ["call": callUUID, "outcome": "reported_ended"])
             } else {
                 Diag.log("wake", ["call": callUUID, "outcome": "canceled"])
@@ -288,11 +289,13 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                 Diag.log("wake", ["call": callUUID, "outcome": "bar_owns"])
             } else if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
                 CallKitController.shared.presentIncoming(
-                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo,
+                    mustReport: mustReport)
                 Diag.log("wake", ["call": callUUID, "outcome": "system_ring"])
             } else if mustReport {
                 CallKitController.shared.presentIncoming(
-                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo,
+                    mustReport: mustReport)
                 Diag.log("wake", ["call": callUUID, "outcome": "reported_ring"])
             } else {
                 idfonLog("idfon push: bar-mode channel \(callerId); no system ring")

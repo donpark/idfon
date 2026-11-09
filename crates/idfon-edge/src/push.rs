@@ -34,6 +34,10 @@ use hyper::body::Incoming;
 use idfon_gateway::{LocalRoute, ResponseBody};
 use idfon_core::CapabilityTicket;
 
+/// VoIP pushes are call-time events: expire them shortly after instead of
+/// storing for a later, useless wake (late pushes cause ghost rings).
+const PUSH_EXPIRATION_SECS: u64 = 30;
+
 /// Ring fan-out boundary: Apple's APNs in production, a recorder in tests.
 pub trait ApnsSender: Send + Sync + 'static {
     fn send(
@@ -143,9 +147,35 @@ impl HttpApns {
     }
 
     /// The refusal body that means "this token belongs to the other
-    /// environment".
+    /// environment" (observed: `BadEnvironmentKeyInToken`; Apple docs also
+    /// spell it `BadEnvironmentKeyIdInToken` — match both).
     fn env_error(error: &anyhow::Error) -> bool {
-        error.to_string().contains("BadEnvironmentKeyInToken")
+        let text = error.to_string();
+        text.contains("BadEnvironmentKeyInToken") || text.contains("BadEnvironmentKeyIdInToken")
+    }
+
+    /// A refusal that means "this token is no longer installed" (410):
+    /// prune it.
+    fn unregistered_error(error: &anyhow::Error) -> bool {
+        let text = error.to_string();
+        text.contains("Unregistered") || text.contains("ExpiredToken")
+    }
+
+    /// `BadDeviceToken` is ambiguous (documented env mismatch vs dead
+    /// token): try the counterpart host once, prune only when both refuse.
+    fn bad_token_error(error: &anyhow::Error) -> bool {
+        error.to_string().contains("BadDeviceToken")
+    }
+
+    /// Wraps a refusal that means the registration is dead — the fan-out
+    /// prunes the token when it sees this.
+    fn stale_token(error: &anyhow::Error) -> anyhow::Error {
+        anyhow::anyhow!("stale apns token: {error}")
+    }
+
+    /// Whether a send error marks the token dead (see [`Self::stale_token`]).
+    pub(crate) fn is_stale_token(error: &anyhow::Error) -> bool {
+        error.to_string().starts_with("stale apns token")
     }
 
     fn bearer(&self) -> anyhow::Result<String> {
@@ -186,6 +216,10 @@ impl HttpApns {
             .header("apns-topic", topic)
             .header("apns-push-type", "voip")
             .header("apns-priority", "10")
+            .header(
+                "apns-expiration",
+                (now_seconds() + PUSH_EXPIRATION_SECS).to_string(),
+            )
             .json(payload)
             .send()
             .await
@@ -222,29 +256,51 @@ impl ApnsSender for HttpApns {
         Box::pin(async move {
             let authorization = authorization?;
             let host = if env == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
-            match Self::post(&client, &authorization, host, &token, &topic, &payload).await {
-                Ok(()) => Ok(()),
-                Err(error) if Self::env_error(&error) => {
-                    // Wrong environment for this token: flip to the
-                    // counterpart host and remember the verdict so the next
-                    // ring does not pay the refusal again.
-                    let other = env.other();
-                    let other_host = if other == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
-                    tracing::warn!(
-                        target: "idfon.edge.push",
-                        from = host,
-                        to = other_host,
-                        "token refused by its environment; trying the counterpart"
-                    );
-                    Self::post(&client, &authorization, other_host, &token, &topic, &payload).await?;
-                    envs
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .insert(token, other);
-                    Ok(())
-                }
-                Err(error) => Err(error),
+            let refused =
+                match Self::post(&client, &authorization, host, &token, &topic, &payload).await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => error,
+                };
+            if Self::unregistered_error(&refused) {
+                return Err(Self::stale_token(&refused));
             }
+            // Wrong environment (env refusal) or an ambiguous
+            // BadDeviceToken: the counterpart may be the right host. If it
+            // also refuses with a token error, the token is dead in both —
+            // prune it at the fan-out.
+            if Self::env_error(&refused) || Self::bad_token_error(&refused) {
+                let other = env.other();
+                let other_host = if other == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
+                tracing::warn!(
+                    target: "idfon.edge.push",
+                    from = host,
+                    to = other_host,
+                    "token refused by its environment; trying the counterpart"
+                );
+                return match Self::post(&client, &authorization, other_host, &token, &topic, &payload)
+                    .await
+                {
+                    Ok(()) => {
+                        envs
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(token, other);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        envs
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .remove(&token);
+                        if Self::unregistered_error(&error) || Self::bad_token_error(&error) {
+                            Err(Self::stale_token(&error))
+                        } else {
+                            Err(error)
+                        }
+                    }
+                };
+            }
+            Err(refused)
         })
     }
 }
@@ -495,6 +551,17 @@ impl PushRoutes {
                     for (token, topic) in &entries {
                         match apns.send(token, topic, payload.clone()).await {
                             Ok(()) => sent += 1,
+                            Err(error) if HttpApns::is_stale_token(&error) => {
+                                // 410 or both hosts refuse: the registration
+                                // is dead. Prune it so a reinstall's fresh
+                                // token is not shadowed by corpses.
+                                tracing::warn!(
+                                    target: "idfon.edge.push",
+                                    %error,
+                                    "pruning stale token"
+                                );
+                                self.store.unregister(account, token);
+                            }
                             Err(error) => {
                                 tracing::warn!(target: "idfon.edge.push", %error, "apns send failed")
                             }
@@ -561,6 +628,66 @@ mod tests {
         assert_eq!(env, TokenEnv::Sandbox);
         assert_eq!(hosts.0, "https://api.push.apple.com");
         assert_eq!(TokenEnv::Production.other(), TokenEnv::Sandbox);
+    }
+
+    struct StaleApns;
+
+    impl ApnsSender for StaleApns {
+        fn send(
+            &self,
+            _token: &str,
+            _topic: &str,
+            _payload: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+            Box::pin(async {
+                Err(HttpApns::stale_token(&anyhow::anyhow!(
+                    "apns 410: {{\"reason\":\"Unregistered\"}}"
+                )))
+            })
+        }
+    }
+
+    #[test]
+    fn stale_tokens_are_pruned_from_the_registry() {
+        let refused = anyhow::anyhow!("apns 410: {{\"reason\":\"Unregistered\"}}");
+        assert!(HttpApns::unregistered_error(&refused));
+        assert!(HttpApns::unregistered_error(&anyhow::anyhow!(
+            "apns 410: {{\"reason\":\"ExpiredToken\"}}"
+        )));
+        assert!(HttpApns::is_stale_token(&HttpApns::stale_token(&refused)));
+        assert!(!HttpApns::is_stale_token(&refused));
+
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let (store, routes) = routes(Some(Arc::new(StaleApns)));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/register",
+            Some(&ticket),
+            serde_json::json!({ "voip_token": "token-dead" }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(store.entries(&account).len(), 1);
+
+        let (status, body) = post(
+            &routes,
+            &account,
+            "/_push/ring",
+            Some(&ticket),
+            serde_json::json!({
+                "call_uuid": "11111111-1111-1111-1111-111111111111",
+                "caller_id": "caller"
+            }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rung"], 0);
+        assert!(
+            store.entries(&account).is_empty(),
+            "a dead token must be pruned so a reinstall is not shadowed by it"
+        );
     }
 
     struct MockApns {
