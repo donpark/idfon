@@ -20,9 +20,60 @@ enum VoiceModelGate {
         set { UserDefaults.standard.set(newValue, forKey: approvedKey) }
     }
 
-    /// Is the voice-agent's ASR on disk? `shortcut: only the default
-    /// (nemotron) cache is checkable — FluidAudio's parakeet cache has no
-    /// cheap presence probe; its downloader is gate-guarded either way.`
+    @MainActor
+    private final class ProgressNotice {
+        private weak var presenter: UIViewController?
+        private var alert: UIAlertController?
+        private var finished = false
+
+        init(presenter: UIViewController, showInitially: Bool) {
+            self.presenter = presenter
+            if showInitially { show("Checking the model manifest…") }
+        }
+
+        var report: @MainActor @Sendable (String, Int64, Int64) -> Void {
+            { [weak self] tier, completed, total in self?.update(tier, completed: completed, total: total) }
+        }
+
+        func finish(tier: String?) {
+            finished = true
+            guard let alert else { return }
+            switch tier {
+            case "prefix":
+                alert.title = "Prefix turn model ready"
+                alert.message = "The selected 100 MB turn model is verified and ready."
+            case "coreai":
+                alert.title = "CoreAI turn model ready"
+                alert.message = "The CoreAI model is verified and available as fallback."
+            case "classic":
+                alert.title = "Classic turn-taking ready"
+                alert.message = "No Tyger model is used on this iOS version."
+            default:
+                alert.title = "Turn model update incomplete"
+                alert.message = "The current model was kept. Check storage or network, then try again."
+            }
+        }
+
+        private func update(_ tier: String, completed: Int64, total: Int64) {
+            guard !finished, completed < total || alert != nil else { return }
+            let done = ByteCountFormatter.string(fromByteCount: completed, countStyle: .file)
+            let size = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+            show("\(tier) model: \(done) of \(size)")
+        }
+
+        private func show(_ message: String) {
+            if alert == nil {
+                let alert = UIAlertController(title: "Turn model update", message: message, preferredStyle: .alert)
+                alert.addAction(.init(title: "Hide", style: .cancel))
+                self.alert = alert
+                presenter?.present(alert, animated: true)
+            } else {
+                alert?.message = message
+            }
+        }
+    }
+
+    /// Is the voice-agent's ASR on disk? The selected backend owns its cache.
     @MainActor
     static func asrReady() -> Bool {
         switch SpeechEngines.asrBackend {
@@ -34,24 +85,38 @@ enum VoiceModelGate {
         }
     }
 
-    /// The turn tier on disk (either rung loads; classic turn-taking works
-    /// without it, so this never blocks a call — it only drives the resume).
+    /// Whether the selected turn policy is ready; pre-27 classic needs no model.
     static func turnTierReady() -> Bool {
+        guard #available(iOS 27.0, *) else { return true }
         let dir = TygerModelStore.root
-        let fm = FileManager.default
-        if #available(iOS 27.0, *) {
-            let coreai = dir.appendingPathComponent("coreai")
-            // Loadable = files + AOT container this OS accepts (`select`). A
-            // student step also needs its per-model traits (a 183-byte resume
-            // fetch; without this the calibrated knobs never land on upgrade).
-            if CoreAITurnModel.loadable(in: coreai) {
-                let student = CoreAITurnModel.studentStep(in: coreai)
-                if !student || CoreAITurnModel.hasTraits(in: coreai) { return true }
-            }
+        let coreai = dir.appendingPathComponent("coreai")
+        if CoreAITurnModel.loadable(in: coreai) {
+            let student = CoreAITurnModel.studentStep(in: coreai)
+            if !student || coreAITraitsAreCurrent(in: coreai, shared: dir) { return true }
         }
-        let present = { (name: String) in fm.fileExists(atPath: dir.appendingPathComponent(name).path) }
-        guard present("TygerEncoder.mlpackage"), present("TygerEncoderDyn.mlpackage") else { return false }
-        return present("StudentStep.mlpackage") ? present("student.traits.json") : present("TygerStep.mlpackage")
+        guard TurnPrefix.isEnabled(environment: ProcessInfo.processInfo.environment),
+              let prefix = TurnPrefix.artifact(in: dir) else { return false }
+        return hasCoreMLPackage(at: prefix)
+            && hasCoreMLPackage(at: dir.appendingPathComponent("StudentStep.mlpackage"))
+    }
+
+    static func hasCoreMLPackage(at package: URL, requiresDebugMapping: Bool = false) -> Bool {
+        var files = ["Manifest.json", "Data/com.apple.CoreML/model.mlmodel",
+                     "Data/com.apple.CoreML/weights/weight.bin"]
+        if requiresDebugMapping { files.append("executorch_debug_handle_mapping.json") }
+        return files.allSatisfy { path in
+            let file = package.appendingPathComponent(path)
+            guard let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize else { return false }
+            return size > 0
+        }
+    }
+
+    static func coreAITraitsAreCurrent(in coreai: URL, shared: URL) -> Bool {
+        guard let installed = try? Data(contentsOf: coreai.appendingPathComponent("student.traits.json")),
+              let current = try? Data(contentsOf: shared.appendingPathComponent("student.traits.json")) else {
+            return false
+        }
+        return installed == current
     }
 
     /// A voice-agent call may start: models are present and no download can
@@ -65,69 +130,72 @@ enum VoiceModelGate {
     @MainActor
     static func prompt(from vc: UIViewController, asr: String? = nil, tts: String? = nil, forCall: Bool = false) {
         if approved {
-            if asrReady() && turnTierReady() { return }
-            start(asr: asr, tts: tts)
-            if forCall {
-                let alert = UIAlertController(
-                    title: "Voice models downloading",
-                    message: "The on-device voice models are still downloading in the background. Calls are ready when the download finishes.",
-                    preferredStyle: .alert)
-                alert.addAction(.init(title: "OK", style: .default))
-                vc.present(alert, animated: true)
+            let ready = asrReady() && turnTierReady()
+            let notice = ProgressNotice(presenter: vc, showInitially: !ready)
+            if !ready { SpeechEngines.prewarm(asr: asr, tts: tts) }
+            Task {
+                let tier = await ensureTurnTier(onProgress: notice.report)
+                notice.finish(tier: tier)
             }
             return
         }
-        let alert = UIAlertController(
-            title: "Voice models",
-            message: "Voice calls need on-device models: speech recognition, the voice, and the turn-taking model — a few GB in total. Download them in the background now? You can keep using the app; calls are ready when it finishes.",
-            preferredStyle: .alert)
+        let message: String
+        if #available(iOS 27.0, *) {
+            message = "Voice-agent calls use on-device speech, voice, and the iOS 27 turn model. Download these models in the background?"
+        } else {
+            message = "Voice-agent calls use on-device speech and voice. Classic turn-taking stays active on this iOS version. Download the speech models in the background?"
+        }
+        let alert = UIAlertController(title: "Voice models", message: message, preferredStyle: .alert)
         alert.addAction(.init(title: "Download", style: .default) { _ in
             approved = true
-            Task { @MainActor in start(asr: asr, tts: tts) }
+            Task { @MainActor in
+                let notice = ProgressNotice(presenter: vc, showInitially: true)
+                start(asr: asr, tts: tts, notice: notice)
+            }
         })
         alert.addAction(.init(title: "Not Now", style: .cancel))
         vc.present(alert, animated: true)
     }
 
-    /// Start the background downloads: the speech engines' warm caches plus
-    /// the turn tier (`TygerModelStore` — the delivery the loaders read).
+    /// Start speech warmups and reconcile the selected turn tier after approval.
     @MainActor
-    static func start(asr: String? = nil, tts: String? = nil) {
+    private static func start(asr: String? = nil, tts: String? = nil, notice: ProgressNotice) {
         guard approved else { return }
         SpeechEngines.prewarm(asr: asr, tts: tts)
-        Task { await ensureTurnTier() }
+        Task {
+            let tier = await ensureTurnTier(onProgress: notice.report)
+            notice.finish(tier: tier)
+        }
     }
 
-    /// Fetch whatever the on-disk turn tier is missing (the 183-byte
-    /// `student.traits.json` included — a tier whose step is present but whose
-    /// traits are not counts as not ready). Returns the tier that ended up ready.
+    /// Fetch or update the on-disk tier and its per-model traits. Returns the
+    /// tier that ended up ready.
     @MainActor
     @discardableResult
-    static func ensureTurnTier() async -> String? {
+    static func ensureTurnTier(
+        onProgress: (@MainActor @Sendable (String, Int64, Int64) -> Void)? = nil
+    ) async -> String? {
         guard approved else { return nil }
-        // Tier choice follows what this OS can *load*, not its version: the
-        // 2026-11-01 AOT artifacts (coreai-build 3605.6.3, MPSGraph package
-        // 7.1.5) exceed what iOS 27.0.x accepts (≤ 7.0.80) and segfault the
-        // Core AI loader, so such a device falls back to the CoreML tier.
-        // Rebuilding the AOT with the older Metal toolchain flips this back
-        // without a code change (the files then load).
-        let tier: String
-        if #available(iOS 27.0, *),
-           CoreAITurnModel.loadable(in: TygerModelStore.root.appendingPathComponent("coreai")) {
-            tier = "coreai"
-        } else {
-            tier = "coreml"
+        guard #available(iOS 27.0, *) else {
+            Automation.mark("voice: turn tier classic (pre-iOS 27; no Tyger download)")
+            return "classic"
         }
-        let ready = await TygerModelStore.ensure(tier: tier)
-        Automation.mark("voice: turn tier \(ready ? "ready" : "download failed") (\(tier))")
-        // The 320 ms turn prefix (#132) is fetched only when the split tier is
-        // switched on: a flag-off user must not pay its ~102 MB. A failed or
-        // absent prefix is not fatal — the runtime falls back to the cut tier,
-        // which is why this does not change the returned tier.
+
+        let root = TygerModelStore.root
+        let coreai = root.appendingPathComponent("coreai")
+        let downloaded = await TygerModelStore.ensure(tier: "coreai", onProgress: onProgress)
+        let coreaiReady = downloaded && CoreAITurnModel.loadable(in: coreai)
+        Automation.mark("voice: turn tier \(coreaiReady ? "ready" : "unloadable; classic fallback") (coreai)")
+
+        var prefixReady = false
         if TurnPrefix.isEnabled(environment: ProcessInfo.processInfo.environment) {
-            let prefixReady = await TygerModelStore.ensure(tier: "prefix")
-            Automation.mark("voice: turn prefix \(prefixReady ? "ready" : "download failed")")
+            _ = await TygerModelStore.ensure(tier: "prefix", onProgress: onProgress)
+            if let prefix = TurnPrefix.artifact(in: root) {
+                prefixReady = hasCoreMLPackage(at: prefix)
+                    && hasCoreMLPackage(at: root.appendingPathComponent("StudentStep.mlpackage"))
+            }
+            Automation.mark("voice: turn prefix \(prefixReady ? "ready" : "unavailable")")
         }
-        return ready ? tier : nil
+        return prefixReady ? "prefix" : (coreaiReady ? "coreai" : "classic")
     }
 }

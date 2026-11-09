@@ -27,6 +27,21 @@ private func modelDirectory(_ name: String, in search: FileManager.SearchPathDir
     try? excluded.setResourceValues(values)
     return dir
 }
+
+enum LegacyModelCleanup {
+    static func purge(in applicationSupport: URL) {
+        for (store, names) in [
+            ("fluidaudio", ["kokoro", "kokoro-82m-coreml"]),
+            ("FluidAudio", ["parakeet-redux"]),
+        ] {
+            let models = applicationSupport.appendingPathComponent(store, isDirectory: true)
+                .appendingPathComponent("Models", isDirectory: true)
+            for name in names {
+                try? FileManager.default.removeItem(at: models.appendingPathComponent(name))
+            }
+        }
+    }
+}
 #if PHONON_TTS
 import PhononTTS
 #endif

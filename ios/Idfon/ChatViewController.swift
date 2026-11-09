@@ -505,11 +505,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         ChatStore.shared.addObserver(self)
         ChatStore.shared.markRead(conversation)
         syncMessages()
-        // A call from here is plausible now, so warm the speech engines early:
-        // the open chat is the first moment the app knows a voice-enabled
-        // contact may be about to be called, and the model load must not sit
-        // on the call's critical path (per-contact engine picks included).
-        if !conversation.isRoom, ContactCallProfiles.isCallable(peer.id) {
+        // Only agents use the local speech stack. Human-to-human calls must
+        // not trigger an agent-model prompt or download.
+        if !conversation.isRoom, ContactCallProfiles.shouldPrewarmModels(peer.id) {
             // The download approval gate (2026-10-27 rule): model downloads
             // start from here only after the user approves them — never
             // while a call is starting.

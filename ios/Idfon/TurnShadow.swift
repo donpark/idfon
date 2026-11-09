@@ -11,12 +11,11 @@ import TygerVoiceCoreAI
 /// `scripts/pack-tyger-models.mjs` shape) into `TygerModelStore.root`
 /// (`Library/Caches/tyger-models` — cache-class, system-reclaimable), the
 /// same place side-loading uses, so
-/// either path works. Only the device's tier is fetched (CoreAI fp32 on iOS
-/// 27+, else the three CoreML packages). Fail-open: any failure just means
-/// classic turn-taking.
+/// either path works. iOS 27+ may fetch the prefix and loadable CoreAI tier;
+/// older iOS keeps classic turn-taking and stores no Tyger tier.
 enum TygerModelStore {
-    struct Manifest: Decodable {
-        struct Entry: Decodable {
+    struct Manifest: Codable {
+        struct Entry: Codable {
             /// Relative path under `Documents/tyger-models/` (bundles are
             /// flattened to their files).
             let name: String
@@ -29,6 +28,39 @@ enum TygerModelStore {
         }
         let url_base: String
         let files: [Entry]
+    }
+
+    private struct InstalledTier: Codable {
+        let files: [Manifest.Entry]
+    }
+
+    final class Progress: @unchecked Sendable {
+        private let lock = NSLock()
+        private let tier: String
+        private let total: Int64
+        private let report: @MainActor @Sendable (String, Int64, Int64) -> Void
+        private var bytes: [String: Int64] = [:]
+
+        init(tier: String, total: Int64, report: @escaping @MainActor @Sendable (String, Int64, Int64) -> Void) {
+            self.tier = tier
+            self.total = total
+            self.report = report
+        }
+
+        func set(_ name: String, bytes value: Int64, notify: Bool = true) {
+            lock.lock()
+            bytes[name] = max(0, value)
+            let completed = min(total, bytes.values.reduce(0, +))
+            lock.unlock()
+            if notify { Task { @MainActor in report(tier, completed, total) } }
+        }
+
+        func publish() {
+            lock.lock()
+            let completed = min(total, bytes.values.reduce(0, +))
+            lock.unlock()
+            Task { @MainActor in report(tier, completed, total) }
+        }
     }
 
     /// The manifest URL: `IDFON_TYGER_MODELS` / `-tygermodels <url>` override
@@ -70,7 +102,7 @@ enum TygerModelStore {
     /// same root (fail-open to classic when it is gone).
     static let root = modelCachesDirectory("tyger-models")
     private static let lock = NSLock()
-    private static var tasks: [String: Task<Bool, Never>] = [:]
+    private static var tasks: [String: (id: UUID, task: Task<Bool, Never>)] = [:]
 
     /// One-time cleanup/migration of model-pack layouts (idempotent, cheap
     /// when nothing is stray). The pack is cache-class since 2026-10-27
@@ -117,6 +149,11 @@ enum TygerModelStore {
         try? fm.removeItem(at: probe)
     }
 
+    /// Pre-27 devices use classic turn-taking; their Tyger cache is retired.
+    static func purgePre27Store(at directory: URL = root) {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     /// The reclaim condition/action we own (2026-10-27). Condition: free
     /// space for important usage below `freeBytes`. Action: delete the store
     /// root — the tier is re-downloadable, loaders fail open to classic, and
@@ -135,30 +172,43 @@ enum TygerModelStore {
         Automation.mark("voice: turn tier reclaimed (\(free / 1_000_000)MB free)")
     }
 
-    /// Download the tier's files once per process (already-present files are
-    /// kept: side-loading and earlier fetches both count). Returns whether
-    /// everything needed is on disk afterwards.
-    static func ensure(tier: String) async -> Bool {
-        let task: Task<Bool, Never> = lock.withLock {
-            if let existing = tasks[tier] { return existing }
-            let created = Task { await fetch(tier: tier) }
-            tasks[tier] = created
-            return created
+    /// Reconcile the selected tier with its published manifest on each approved check.
+    static func ensure(
+        tier: String,
+        onProgress: (@MainActor @Sendable (String, Int64, Int64) -> Void)? = nil
+    ) async -> Bool {
+        let (id, task): (UUID, Task<Bool, Never>) = lock.withLock {
+            if let existing = tasks[tier] { return (existing.id, existing.task) }
+            let id = UUID()
+            let created = Task { await fetch(tier: tier, onProgress: onProgress) }
+            tasks[tier] = (id, created)
+            return (id, created)
         }
-        return await task.value
+        let result = await task.value
+        lock.withLock {
+            if tasks[tier]?.id == id { tasks[tier] = nil }
+        }
+        return result
     }
 
-    private static func fetch(tier: String) async -> Bool {
+    private static func fetch(
+        tier: String,
+        onProgress: (@MainActor @Sendable (String, Int64, Int64) -> Void)?
+    ) async -> Bool {
         var urls: [URL] = []
         if let primary = manifestURL { urls.append(primary) }
         if overrideURL() == nil, let mirror = mirrorManifestURL { urls.append(mirror) }
         for url in urls {
-            if await fetch(manifest: url, tier: tier) { return true }
+            if await fetch(manifest: url, tier: tier, onProgress: onProgress) { return true }
         }
         return false
     }
 
-    private static func fetch(manifest url: URL, tier: String) async -> Bool {
+    private static func fetch(
+        manifest url: URL,
+        tier: String,
+        onProgress: (@MainActor @Sendable (String, Int64, Int64) -> Void)?
+    ) async -> Bool {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let manifest = try JSONDecoder().decode(Manifest.self, from: data)
@@ -167,44 +217,183 @@ enum TygerModelStore {
                 $0.name.hasPrefix("\(tier)/") && ($0.platform == nil || $0.platform == Self.platform)
             }
             guard !wanted.isEmpty else { return false }
-            // Parallel fetches: a tier is a handful of large files and the
-            // host is a CDN — the wall time drops roughly with the width.
-            return await withTaskGroup(of: Bool.self) { group in
-                for entry in wanted {
-                    let dest = root.appendingPathComponent(installPath(for: entry.name))
-                    if FileManager.default.fileExists(atPath: dest.path) { continue }
-                    group.addTask { await fetchOne(entry, base: base) }
-                }
-                var ok = true
-                for await fetched in group { ok = ok && fetched }
-                return ok
+
+            let stateURL = root.appendingPathComponent(".installed-\(tier).json")
+            let installed = (try? Data(contentsOf: stateURL))
+                .flatMap { try? JSONDecoder().decode(InstalledTier.self, from: $0) }
+            let oldByName = Dictionary(uniqueKeysWithValues: (installed?.files ?? []).map { ($0.name, $0) })
+            // Retire only assets this tier previously owned and the new manifest no longer names.
+            for old in obsoleteAssets(installed: installed?.files ?? [], wanted: wanted) {
+                try? FileManager.default.removeItem(at: root.appendingPathComponent(installPath(for: old.name)))
             }
+
+            let total = wanted.reduce(Int64(0)) { $0 + Int64($1.bytes) }
+            let progress = Progress(tier: tier, total: total, report: onProgress ?? { _, _, _ in })
+            var pending: [Manifest.Entry] = []
+            for entry in wanted {
+                let dest = root.appendingPathComponent(installPath(for: entry.name))
+                let changed = oldByName[entry.name].map { $0.sha256 != entry.sha256 } ?? false
+                let verifyHash = entry.bytes <= 1_048_576 || changed
+                if Self.existingFileMatches(entry, at: dest, verifyHash: verifyHash) {
+                    progress.set(entry.name, bytes: Int64(entry.bytes), notify: false)
+                } else {
+                    pending.append(entry)
+                }
+            }
+            progress.publish()
+
+            let needed = pending.reduce(Int64(0)) { $0 + Int64($1.bytes) }
+            let home = URL(fileURLWithPath: NSHomeDirectory())
+            let free = (try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage ?? .max
+            let reserve: Int64 = 64_000_000
+            guard needed == 0 || free >= needed + reserve else {
+                Automation.mark("tyger models: insufficient space tier=\(tier) need=\((needed + reserve) / 1_000_000)MB free=\(free / 1_000_000)MB")
+                return false
+            }
+
+            let ok = await withTaskGroup(of: Bool.self) { group in
+                for entry in pending {
+                    group.addTask {
+                        await fetchOne(entry, base: base) { bytes in
+                            progress.set(entry.name, bytes: bytes)
+                        }
+                    }
+                }
+                var allInstalled = true
+                for await fetched in group { allInstalled = fetched && allInstalled }
+                return allInstalled
+            }
+            guard ok else { return false }
+            let snapshot = InstalledTier(files: wanted)
+            try JSONEncoder().encode(snapshot).write(to: stateURL, options: .atomic)
+            return true
         } catch {
             Automation.mark("tyger models: fetch failed \(error.localizedDescription)")
             return false
         }
     }
 
+    static func obsoleteAssets(installed: [Manifest.Entry], wanted: [Manifest.Entry]) -> [Manifest.Entry] {
+        let names = Set(wanted.map(\.name))
+        return installed.filter { !names.contains($0.name) }
+    }
+
+    static func existingFileMatches(_ entry: Manifest.Entry, at url: URL, verifyHash: Bool = true) -> Bool {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+              size == entry.bytes else { return false }
+        return !verifyHash || sha256(of: url) == entry.sha256
+    }
+
     /// One manifest entry: download, verify, install. Never throws.
-    private static func fetchOne(_ entry: Manifest.Entry, base: URL) async -> Bool {
+    private static func fetchOne(
+        _ entry: Manifest.Entry,
+        base: URL,
+        onProgress: @escaping @Sendable (Int64) -> Void
+    ) async -> Bool {
         let dest = root.appendingPathComponent(installPath(for: entry.name))
         Automation.mark("tyger models: fetching \(entry.asset) \(entry.bytes / 1_000_000)MB")
-        guard let (tmp, _) = try? await URLSession.shared.download(from: base.appendingPathComponent(entry.asset)),
+        guard let (tmp, response) = try? await ModelAssetDownload.fetch(
+            base.appendingPathComponent(entry.asset), onProgress: onProgress) else {
+            Automation.mark("tyger models: download failed \(entry.asset)")
+            return false
+        }
+        guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
               sha256(of: tmp) == entry.sha256 else {
+            try? FileManager.default.removeItem(at: tmp)
             Automation.mark("tyger models: checksum mismatch \(entry.asset)")
             return false
         }
+        let backup = dest.appendingPathExtension("previous-\(UUID().uuidString)")
         do {
             try FileManager.default.createDirectory(
                 at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-            _ = try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.moveItem(at: tmp, to: dest)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.moveItem(at: dest, to: backup)
+            }
+            do {
+                try FileManager.default.moveItem(at: tmp, to: dest)
+                try? FileManager.default.removeItem(at: backup)
+            } catch {
+                if FileManager.default.fileExists(atPath: backup.path) {
+                    try? FileManager.default.moveItem(at: backup, to: dest)
+                }
+                throw error
+            }
         } catch {
+            try? FileManager.default.removeItem(at: tmp)
             Automation.mark("tyger models: install failed \(entry.asset)")
             return false
         }
         Automation.mark("tyger models: installed \(entry.name)")
         return true
+    }
+
+    private final class ModelAssetDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<(URL, URLResponse?), Error>?
+        private var session: URLSession?
+        private var finished = false
+        private let onProgress: @Sendable (Int64) -> Void
+
+        private init(
+            continuation: CheckedContinuation<(URL, URLResponse?), Error>,
+            onProgress: @escaping @Sendable (Int64) -> Void
+        ) {
+            self.continuation = continuation
+            self.onProgress = onProgress
+        }
+
+        static func fetch(
+            _ url: URL,
+            onProgress: @escaping @Sendable (Int64) -> Void
+        ) async throws -> (URL, URLResponse?) {
+            try await withCheckedThrowingContinuation { continuation in
+                let delegate = ModelAssetDownload(continuation: continuation, onProgress: onProgress)
+                let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+                delegate.session = session
+                session.downloadTask(with: url).resume()
+            }
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            downloadTask: URLSessionDownloadTask,
+            didWriteData bytesWritten: Int64,
+            totalBytesWritten: Int64,
+            totalBytesExpectedToWrite: Int64
+        ) {
+            onProgress(totalBytesWritten)
+        }
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                        didFinishDownloadingTo location: URL) {
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tyger-\(UUID().uuidString)")
+            do {
+                try FileManager.default.moveItem(at: location, to: destination)
+                finish(.success((destination, downloadTask.response)))
+            } catch {
+                finish(.failure(error))
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            if let error { finish(.failure(error)) }
+        }
+
+        private func finish(_ result: Result<(URL, URLResponse?), Error>) {
+            lock.lock()
+            guard !finished else { lock.unlock(); return }
+            finished = true
+            let continuation = self.continuation
+            self.continuation = nil
+            let session = self.session
+            self.session = nil
+            lock.unlock()
+            continuation?.resume(with: result)
+            session?.finishTasksAndInvalidate()
+        }
     }
 
     /// Install paths follow the loaders' expectations — and the side-load
@@ -289,56 +478,28 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     /// fire. The Automation marks stay either way (the diff log).
     var onDecision: ((String) -> Void)?
 
-    /// nil when no models are available.
+    /// nil means classic turn-taking stays in charge.
     static func start() async -> TurnShadow? {
+        guard #available(iOS 27.0, *) else {
+            Automation.mark("turn-shadow: classic tier on pre-iOS 27")
+            return nil
+        }
         let dir = TygerModelStore.root
-        // Tiers load only when already present — an ASR-warmup race must
-        // never pull a 0.8 GB tier. A late shadow costs nothing — classic
-        // drives until it appears — and a failed load just means classic for
-        // this call.
         if let prefix = loadPrefixTier(in: dir) { return prefix }
-        if #available(iOS 27.0, *) {
-            do {
-                let coreai = try CoreAITurnModel(directory: dir.appendingPathComponent("coreai"))
-                let traits = traitsJSON(in: coreai.directory, step: coreai.stepModelName)
-                Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU, \(coreai.stepModelName), traits \(traits == nil ? "default" : "student"))")
-                Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "step": coreai.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
-                return TurnShadow(model: coreai, traits: traits,
-                                  meta: ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32",
-                                         "step": coreai.stepModelName,
-                                         "traits": traits == nil ? "default" : "student"])
-            } catch {
-                // The 2026-10-27 class: an install can end up with no usable
-                // turn pair — record why the tier failed (console + diag).
-                idfonLog("turnmodel: coreai load failed: \(error)")
-                Diag.log("turnmodel", ["tier": "coreai", "ok": false, "error": String(describing: error)])
-            }
-        }
-        let enc = dir.appendingPathComponent("TygerEncoder.mlpackage")
-        let dyn = dir.appendingPathComponent("TygerEncoderDyn.mlpackage")
-        // Step preference: the distilled student, teacher as fallback (the
-        // encoder is shared; StudentStep.mlpackage is 5.3 MB vs 56 MB).
-        let student = dir.appendingPathComponent("StudentStep.mlpackage")
-        let teacher = dir.appendingPathComponent("TygerStep.mlpackage")
-        let step = FileManager.default.fileExists(atPath: student.path) ? student : teacher
-        guard FileManager.default.fileExists(atPath: enc.path),
-              FileManager.default.fileExists(atPath: dyn.path),
-              FileManager.default.fileExists(atPath: step.path) else {
-            Automation.mark("turn-shadow: no models at \(dir.path)")
-            Diag.log("turnmodel", ["ok": false, "error": "no models installed"])
+        do {
+            let coreai = try CoreAITurnModel(directory: dir.appendingPathComponent("coreai"))
+            let traits = traitsJSON(in: coreai.directory, step: coreai.stepModelName)
+            Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU, \(coreai.stepModelName), traits \(traits == nil ? "default" : "student"))")
+            Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "step": coreai.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
+            return TurnShadow(model: coreai, traits: traits,
+                              meta: ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32",
+                                     "step": coreai.stepModelName,
+                                     "traits": traits == nil ? "default" : "student"])
+        } catch {
+            idfonLog("turnmodel: coreai load failed: \(error)")
+            Diag.log("turnmodel", ["tier": "coreai", "ok": false, "error": String(describing: error)])
             return nil
         }
-        guard let model = try? CoreMLTurnModel(encoderURL: enc, encoderDynURL: dyn, stepURL: step) else {
-            Automation.mark("turn-shadow: model load failed")
-            Diag.log("turnmodel", ["tier": "coreml", "ok": false, "error": "load failed"])
-            return nil
-        }
-        let traits = traitsJSON(in: dir, step: model.stepModelName)
-        Automation.mark("turn-shadow: tier CoreML (fp16/ANE, \(model.stepModelName), traits \(traits == nil ? "default" : "student"))")
-        Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
-        return TurnShadow(model: model, traits: traits,
-                          meta: ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName,
-                                 "traits": traits == nil ? "default" : "student"])
     }
 
     /// The one prefix load path, shared by the call-time tier and the

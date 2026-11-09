@@ -1,8 +1,8 @@
 import Foundation
 
 /// What a contact is (human vs agent) and whether the app can place a call to
-/// them at all. The contacts list's row Call verb, the chat's call entry, and
-/// the chat-open speech prewarm all consult it.
+/// them at all. The contacts list's row Call verb and the chat's call entry
+/// consult it; speech-model warmup is restricted to voice-enabled agents.
 struct ContactCallProfile {
     enum Kind: String, CaseIterable {
         /// An ordinary peer — a person (`voice` false records e.g. a deaf user).
@@ -47,6 +47,11 @@ enum ContactCallProfiles {
     /// Callable == takes calls (voice for agents, the classic call for humans).
     static func isCallable(_ peerID: String) -> Bool {
         profile(for: peerID).voiceEnabled
+    }
+
+    static func shouldPrewarmModels(_ peerID: String) -> Bool {
+        let profile = profile(for: peerID)
+        return profile.kind == .agent && profile.voiceEnabled
     }
 
     /// Persist overrides from the person screen; nil returns a field to its

@@ -9,15 +9,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// Build stamp for device E2E: bumped on every fix round and confirmed in
     /// the device console before testing. The stale-binary trap (testing an
     /// old install while believing it is new) has cost several rounds.
-    static let buildStamp = "2026-11-05.turnprefixprobe"
+    static let buildStamp = "2026-11-08.model-hygiene"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
         // Compiler scratch from killed/hung CoreAI loads (age-gated, off-main).
         Task.detached { ScratchSweep.sweep() }
-        // Model-dir housekeeping (legacy side-load layouts into the store
-        // root); synchronous — the moves are same-volume renames.
+        // Model-dir housekeeping: migrate legacy side-loads, drop the Tyger
+        // cache on pre-27, and retire unused speech packs.
         TygerModelStore.migrateLegacyLayout()
+        if #unavailable(iOS 27.0) { TygerModelStore.purgePre27Store() }
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        LegacyModelCleanup.purge(in: support)
         TygerModelStore.reclaimIfDiskLow()
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.

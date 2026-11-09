@@ -1,11 +1,11 @@
 # On-device port brief: TYGER on Apple silicon
 
-Status: **as-built (2026-10-21).** The port exists and is gated: the numeric
-chain in three runtimes (`ports/tyger-swift`: `CoreMLTurnModel`,
-`MlxTurnModel`, `CoreAITurnModel`), the exports (`ports/tyger-{coreml,coreai,
-mlx}`), the decision guards (`parity6`/`parity7`), and both apps' `TurnShadow`
-shadows. The brief below records the reasoning that produced it; the dated
-rulings are the history — **the tier table is the current state.**
+Status: **tier policy updated 2026-11-08.** The exports and parity studies below
+are the evidence record; the dated rulings are historical — **the tier table is
+the current iOS/macOS policy.** iOS 27+ is prefix-first, with CoreAI only when its
+AOT package is loadable; load failures fall back to classic. iOS 18–26 uses classic
+turn-taking and stores no Tyger tier. Human-to-human calling does not require these
+voice-agent models.
 
 ## Tier state (current)
 
@@ -15,11 +15,12 @@ rulings and measurements further down are the record that produced it.
 | Platform | Tier | Guard / note | Size |
 | --- | --- | --- | --- |
 | **All platforms (2026-10-22; removed 2026-10-25)** | ~~path-C student~~ deleted: a Parakeet-tap copycat with ~50% decision parity and a backchannel head that never fired | — | — |
-| **macOS 27+ / iOS 27+** | **CoreAI fp32, L4 cut** — `bench-results/tier-l4/coreai` (the shipped pair: `TygerEncoderL4` = `hidden_states[4]`, max|Δ| 0, + `student_step`) | encoder exact; student 56.6% live event agreement (13 captures) | 433 MB |
-| — fallback | CoreAI fp32 L15 — `bench-results/coreai` | **100%** (917/917 identical frames) | 1.53 GB |
-| — fallback, opt-in rung | CoreAI fp16 (fp16 compute, fp32 I/O) — `IDFON_TURN_PRECISION=fp16` | 99.67% aligned ±2 frames on the corpus — but **0 endpoints on the corner gate** (fp16 `p_end` drift); opt-in only | ~0.77 GB |
+| macOS 27+ | **CoreAI fp32, L4 cut** — `bench-results/tier-l4/coreai` (the shipped pair: `TygerEncoderL4` = `hidden_states[4]`, max|Δ| 0, + `student_step`) | encoder exact; student 56.6% live event agreement (13 captures) | 433 MB |
+| iOS 27+ | **prefix-320 first** (`encoder_tap_42-13_320ms_fp16_int8w_l4b2.mlpackage`); CoreAI fp32 L4 is the fallback only when its AOT is loadable | recent device logs select `prefix-320`; any load failure falls back to classic | 102 MB + 433 MB fallback |
+| — macOS fallback | CoreAI fp32 L15 — `bench-results/coreai` | **100%** (917/917 identical frames) | 1.53 GB |
+| — macOS fallback, opt-in rung | CoreAI fp16 (fp16 compute, fp32 I/O) — `IDFON_TURN_PRECISION=fp16` | 99.67% aligned ±2 frames on the corpus — but **0 endpoints on the corner gate** (fp16 `p_end` drift); opt-in only | ~0.77 GB |
 | macOS 14–26 | MLX int8-g16 (stem + layers.0 fp32) — `TygerVoiceMLX` | 99.5% (3 flips in 917) | 1.58 GB on disk¹ |
-| iOS 18–26 | CoreML fp16 encoder (ANE) + fp32 step — `TygerVoice` | 95.9% (21 flips; accepted jitter) | ~0.86 GB |
+| iOS 18–26 | **Classic turn-taking** — no Tyger CoreML/prefix download or load; human-to-human calls remain available | voice-agent turn model is optional and fails open to classic | — |
 
 ¹ the artifact stores dequantized fp32 weights ("380 MB" is the quantized
 weight estimate, not the file).
@@ -68,9 +69,10 @@ older toolchain (`MetalToolchain-v27.1.266.1`, 7.0.63) load fine — the 30k-cal
 soak passes on them.
 
 - Code mitigation: `CoreAITurnModel.select` treats a package above 7.0.80 as not
-  loadable (`IDFON_TURN_AOT_MAX` raises the gate), so the tier is refused and the
-  app falls back instead of crashing; `VoiceModelGate.start` downloads the
-  **CoreML** tier on iOS while the Core AI files on disk are not loadable.
+  loadable (`IDFON_TURN_AOT_MAX` raises the gate), so the tier is refused. On
+  iOS 27+, the app tries the 320 ms prefix, then a loadable CoreAI artifact, and
+  otherwise stays on classic turn-taking; it does not download the old CoreML
+  encoder fallback. iOS 18–26 stays classic and stores no Tyger tier.
 - Real fix: rebuild the AOT containers with a toolchain that emits ≤ 7.0.80 (the
   27.1 Metal toolchain, root-only here) and republish. `TygerModelStore.fetch`
   keeps files that already exist, so a same-name republish will not replace an
@@ -81,15 +83,15 @@ soak passes on them.
   2026-10-27 ruling: the fp16 pair drifts `p_end` ≈ 0.03 and never ends a
   margin turn on the corner gate); fp16 is opt-in via
   `IDFON_TURN_PRECISION=fp16` and the fallback when only it is installed.
-- **Delivery (phone)**: `TygerModelStore` fetches the tier from the pinned
-  `donpark/tyger-models` manifest (packed by `scripts/pack-tyger-models.mjs`)
-  into `TygerModelStore.root` — `Library/Caches/tyger-models`, cache-class
-  (the weights are re-downloadable) — behind the `VoiceModelGate` download
-  approval (2026-10-27 rule: downloads start from the leading user action,
-  never at call start). The manifest ships the fp32 pair plus the A18
-  (`.h17p`) AOT containers — loading a source `.aimodel` without one triggers
-  the per-load ANE compile leak (`docs/disk-hygiene.md`) — and side-loads go
-  to the same directory. `TygerModelStore.migrateLegacyLayout()` (app launch)
+- **Delivery (phone)**: on iOS 27+, `TygerModelStore` fetches the CoreAI and
+  optional prefix tiers from the `donpark/tyger-models` manifest into
+  `Library/Caches/tyger-models`, behind `VoiceModelGate` approval. The store
+  records the installed manifest, replaces changed assets by checksum, removes
+  retired assets from that managed tier, checks free space, and reports transfer
+  progress. iOS 18–26 uses classic turn-taking and purges the Tyger cache at app
+  launch; it never downloads the old ~0.86 GB CoreML tier. The manifest's
+  `.h17p` AOT containers avoid the per-load ANE compile leak described in
+  `docs/disk-hygiene.md`; side-loads use the same directory. `TygerModelStore.migrateLegacyLayout()` (app launch)
   moves the older layouts in (pre-2026-10-27 `Documents/tyger-models`, the
   earlier Application Support root) and deletes the product-dead `pathc` tier.
   **Reclaim (2026-10-27)**: the tier is cache-class on purpose — iOS purges
