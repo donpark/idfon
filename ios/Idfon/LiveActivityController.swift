@@ -335,13 +335,10 @@ final class LiveActivityController: NSObject {
         let previous = phase
         let machine = ActiveMachine.current
         if machine != nil { pendingCall = nil }
-        // One incoming bar at a time, by arrival transport
-        // (docs/callkit-integration.md #7): a ring push is always reported to
-        // CallKit (the app can be deactivated at any moment) and that system
-        // bar IS the ring — the Bar stays out of `.incoming` while the call is
-        // up. A ring that arrived over iroh never gets a system bar, so the
-        // Bar rings it — its appearance is fully ours to control. The
-        // in-progress Bar after an answer is unaffected.
+        // One incoming surface per call generation: CallKit-mode invites and
+        // PushKit wakes share a system call UUID; the Bar stays out of
+        // `.incoming` while that call is up. In-app-only invites ring in the
+        // Bar. The in-progress Bar after an answer is unaffected.
         let next: LiveActivityBarModel.Phase
         if machine?.phase == .incoming, CallKitController.shared.current?.outgoing == false {
             next = .idle

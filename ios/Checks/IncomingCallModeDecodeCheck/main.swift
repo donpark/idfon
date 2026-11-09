@@ -3,6 +3,7 @@
 // to decode when a daemon sends a mode iOS does not know:
 //
 //   swiftc -o /tmp/icmcheck \
+//     ios/Idfon/Artifact.swift ios/Idfon/JSONRenderModel.swift \
 //     ios/Idfon/Models.swift ios/Checks/IncomingCallModeDecodeCheck/main.swift
 //   /tmp/icmcheck
 //
@@ -35,6 +36,8 @@ let bar = IncomingCallMode.bar, kit = IncomingCallMode.callKit
 check(byId["absent"] == bar, "absent call_mode resolves to .bar")
 check(byId["bar"] == bar, "bar decodes to .bar")
 check(byId["kit"] == kit, "call_kit decodes to .callKit")
+check(!bar.usesCallKit, "bar stays in-app only")
+check(kit.usesCallKit, "call_kit uses the iOS system call UI")
 check(byId["future"] == bar, "unrecognized value resolves to .bar (array still decodes)")
 check(byId["null"] == bar, "null resolves to .bar")
 check(byId["number"] == bar, "non-string value resolves to .bar")

@@ -85,7 +85,12 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     /// Ring the peer's registered devices — call after the invite envelope is
     /// queued. `callUUID` must be `CallUUID.from(ticket)` of the invite, so the
     /// callee's push report and the envelope land on the same system call.
+    @MainActor
     func ring(peer: String, callUUID: String, hasVideo: Bool) {
+        guard IncomingCallRouter.shared.mode(for: peer).usesCallKit else {
+            idfonLog("idfon push: skipped ring for in-app-only channel peer=\(peer)")
+            return
+        }
         guard EdgeClient.shared.baseURL != nil else {
             idfonLog("idfon push: no edge configured; skipping ring")
             return
@@ -221,7 +226,9 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         for type: PKPushType, completion: @escaping () -> Void
     ) {
         idfonLog("idfon push: incoming (classic) type=\(type.rawValue)")
-        handlePush(payload.dictionaryPayload, mustReport: true, completion)
+        MainActor.assumeIsolated {
+            handlePush(payload.dictionaryPayload, mustReport: true, completion)
+        }
     }
 
     /// iOS 26.4+ delivers VoIP pushes through this variant — when the delegate
@@ -236,11 +243,16 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         withCompletionHandler completion: @escaping () -> Void
     ) {
         idfonLog("idfon push: incoming (voip) mustReport=\(metadata.mustReport)")
-        handlePush(payload.dictionaryPayload, mustReport: metadata.mustReport, completion)
+        MainActor.assumeIsolated {
+            handlePush(payload.dictionaryPayload, mustReport: metadata.mustReport, completion)
+        }
     }
 
     /// The classic delegate (pre-26.4): every VoIP push must end in a
-    /// reported call there, so `mustReport` is carried as true.
+    /// reported call there, so `mustReport` is carried as true. Both delegate
+    /// callbacks run on the registry's main queue; report synchronously before
+    /// completing rather than racing a main-actor task against a timeout.
+    @MainActor
     private func handlePush(
         _ dict: [AnyHashable: Any], mustReport: Bool, _ completion: @escaping () -> Void
     ) {
@@ -248,91 +260,48 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         let cancel = (dict["cancel"] as? Bool) == true
         idfonLog("idfon push: received call=\(callUUID) cancel=\(cancel) mustReport=\(mustReport)")
         Diag.log("push.received", ["call": callUUID, "cancel": cancel, "must_report": mustReport])
-        // Report before anything else (Signal's rule) — the completion handler
-        // runs once the system has the call. But PushKit kills the app when
-        // completion is late (~1.5s budget; the #55 death: the report landed
-        // and the call UI appeared, then the process died ~2s later because
-        // completion was still queued behind a busy main actor). So a deadline
-        // fallback exits the callback on time even when main stalls — exactly
-        // one of the two paths runs it.
-        let done = Once(completion)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.2) { done.run() }
-        Task { @MainActor in
-            if cancel {
-                // End the ringing call in one turn. A cancel for a call that
-                // is already gone must not resurrect it (report-then-end
-                // flash) — but it must still end in a *reported* call: every
-                // VoIP push that doesn't counts against the channel, and
-                // PushKit then stops delivering to a suspended app entirely
-                // (observed: ring pushes accepted by APNs, delegate never
-                // called, until the push stream goes quiet and it heals).
-                if !CallKitController.shared.cancelFromPush(callUUID: callUUID) {
-                    CallKitController.shared.presentPush(
-                        callUUID: callUUID,
-                        callerId: dict["caller_id"] as? String ?? "",
-                        hasVideo: (dict["has_video"] as? Bool) ?? false,
-                        endImmediately: true)
-                    Diag.log("wake", ["call": callUUID, "outcome": "reported_ended"])
-                } else {
-                    Diag.log("wake", ["call": callUUID, "outcome": "canceled"])
-                }
+        if cancel {
+            // End the ringing call in one turn. A stale cancel still needs a
+            // report on PushKit versions that require one.
+            if !CallKitController.shared.cancelFromPush(callUUID: callUUID) {
+                CallKitController.shared.presentIncoming(
+                    callUUID: callUUID,
+                    callerId: dict["caller_id"] as? String ?? "",
+                    hasVideo: (dict["has_video"] as? Bool) ?? false,
+                    endImmediately: true)
+                Diag.log("wake", ["call": callUUID, "outcome": "reported_ended"])
             } else {
-                let callerId = dict["caller_id"] as? String ?? ""
-                let hasVideo = (dict["has_video"] as? Bool) ?? false
-                // The arrival transport decides the surface (#7): the invite
-                // envelope is queued before the ring push is sent, so on a
-                // live app it arrives first and the Bar owns that ring — a
-                // system bar must never appear over it. A push for a call the
-                // machines do not own yet reports the system bar (the
-                // suspended-phone case): the app can be deactivated at any
-                // moment, so the system ring must exist before that happens.
-                let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
-                func ownedByBar(_ generation: String?) -> Bool {
-                    guard let generation else { return false }
-                    return CallUUID.from(ticket: generation) == uuid
-                }
-                let barOwnsCall = ownedByBar(LiveCall.shared.callGeneration)
-                    || ownedByBar(VideoCall.shared.callGeneration)
-                if barOwnsCall, !mustReport {
-                    idfonLog("idfon push: ring already arrived over iroh; the Bar owns it — no system bar")
-                    Diag.log("wake", ["call": callUUID, "outcome": "bar_owns"])
-                } else if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
-                    CallKitController.shared.presentPush(
-                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
-                    Diag.log("wake", ["call": callUUID, "outcome": "system_ring"])
-                } else if mustReport {
-                    // Apple demands a reported call for this push. Report and
-                    // KEEP it: the report-then-end flash (#58) looked like a
-                    // call the user could answer but ended under them
-                    // (the #51 E2E "blurry call screen"). If no invite lands,
-                    // the caller's cancel push or the 20s pending-answer guard
-                    // closes it; the Bar ring is presentation-only.
-                    CallKitController.shared.presentPush(
-                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
-                    Diag.log("wake", ["call": callUUID, "outcome": "reported_ring"])
-                } else {
-                    idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
-                    Diag.log("wake", ["call": callUUID, "outcome": "bar_mode"])
-                }
+                Diag.log("wake", ["call": callUUID, "outcome": "canceled"])
             }
-            Diag.flush() // a wake can die within ~1.5 s: ship before done
-            done.run()
+        } else {
+            let callerId = dict["caller_id"] as? String ?? ""
+            let hasVideo = (dict["has_video"] as? Bool) ?? false
+            let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
+            func ownedByBar(_ generation: String?) -> Bool {
+                guard let generation else { return false }
+                return CallUUID.from(ticket: generation) == uuid
+            }
+            let barOwnsCall = ownedByBar(LiveCall.shared.callGeneration)
+                || ownedByBar(VideoCall.shared.callGeneration)
+            if barOwnsCall, !mustReport {
+                idfonLog("idfon push: ring already arrived over iroh; the Bar owns it — no system bar")
+                Diag.log("wake", ["call": callUUID, "outcome": "bar_owns"])
+            } else if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
+                CallKitController.shared.presentIncoming(
+                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                Diag.log("wake", ["call": callUUID, "outcome": "system_ring"])
+            } else if mustReport {
+                CallKitController.shared.presentIncoming(
+                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                Diag.log("wake", ["call": callUUID, "outcome": "reported_ring"])
+            } else {
+                idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
+                Diag.log("wake", ["call": callUUID, "outcome": "bar_mode"])
+            }
         }
-    }
-
-    /// Runs the push completion exactly once: the main-actor path and the
-    /// deadline fallback race for it.
-    private final class Once {
-        private let lock = NSLock()
-        private var body: (() -> Void)?
-        init(_ body: @escaping () -> Void) { self.body = body }
-        func run() {
-            lock.lock()
-            let body = self.body
-            self.body = nil
-            lock.unlock()
-            body?()
-        }
+        // reportNewIncomingCall has been invoked before PushKit is completed.
+        completion()
+        Diag.flush()
     }
 
     // MARK: - Identity / tickets

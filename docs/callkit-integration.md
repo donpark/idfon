@@ -7,25 +7,25 @@ Because they perform separate roles, they can be wired together to build a nativ
 
 ---
 
-## Implemented seam in this repo
+## Current iOS integration
 
-The dual-mode decision is captured in `docs/ui-design-notes.md` §6 and is already wired
-end-to-end short of CallKit itself:
+The dual-mode decision from `docs/ui-design-notes.md` §6 is wired through the iOS
+CallKit owner and the shared live-call state machines:
 
 * Each daemon peer record carries `call_mode` (`"bar"` | `"call_kit"`, default `"bar"`),
   settable via `peer.add` / `peer.update` and the CLI (`idfon peer add|update --call-mode`).
   See `docs/protocol.md`.
-* `ios/Idfon/IncomingCallRouter.swift` is the single routing point: a fresh incoming
-  invite resolves the **sending channel's** mode; a `call_kit` channel is reported to
-  CallKit **and** handed to the machines (the mode governs presentation, not
-  transport), every other channel takes the Bar path (`LiveCall` + `VideoCall`).
+* `ios/Idfon/IncomingCallRouter.swift` routes calls through the existing machines.
+  The per-contact `call_mode` controls calls placed to that peer: `call_kit` uses
+  CallKit and sends a VoIP wake; the invite carries that mode so the receiver reports
+  the ticket-derived UUID even if the iroh invite arrives before the push. `bar` uses
+  the in-app Bar and sends no VoIP push.
 * `CallKitIncomingPresenter.isAvailable` is `true` — P1 landed
   (`ios/Idfon/CallKitController.swift`, `CXProvider` + `CXProviderDelegate`, mirroring
   the machines via their `notify()` funnel). A channel whose CallKit report fails falls
   back to the Bar (`forceBarFallback`, an explicit switch, never a silent mode change).
-  **No in-app UI sets `call_mode` yet** — it is settable via `peer.add`/`peer.update`
-  and the CLI over the app's socket (the doc's old "Incoming calls" menu never existed
-  in code; the mode-setting UI is a P1 follow-up).
+  Contact Details exposes the per-contact choice and explains that in-app-only calls
+  cannot wake a suspended app.
 * macOS presents in-app today, and its system-call surface is **not** `CXProvider` —
   it is **LiveCommunicationKit** (`ConversationManager`), CallKit's shape one
   generation later. That lands as plan phase P3 (deferred); the mac app has no routing
@@ -33,16 +33,16 @@ end-to-end short of CallKit itself:
   `mac/Sources/Idfon/Calls.swift`). Wire values keep the `call_kit` name — it names the
   mode family, not the framework.
 
-Not implemented: PushKit VoIP registration and token handling, the APNs payload split,
-and the macOS LiveCommunicationKit presenter. The I/O notes below still apply to that
-work.
+Not implemented: the macOS LiveCommunicationKit presenter (P3). PushKit registration,
+ring/cancel delivery, and iOS CallKit presentation are implemented; deployment still
+requires valid APNs credentials and matching signed app environment.
 
 ---
 
 ## Implementation plan
 
-Status: **P1 landed** (as-built details in "Implemented seam" above); **P3 deferred**
-(mac later). P2 is next. Three separable problems, shipped as three phases:
+Status: **P1 and P2 landed** (as-built details in "Implemented seam" and §P2 below);
+**P3 deferred** (mac later). Three separable problems, shipped as three phases:
 
 * **P1 — CallKit owns the call lifecycle** while the app process is alive (foreground
   or background-alive during a call). No backend, no push, no new entitlements beyond
@@ -83,9 +83,9 @@ instance at app start. Flipping
 `IncomingCallRouter.CallKitIncomingPresenter.isAvailable` to `true` and implementing
 `present(peerId:text:)` is the entire landing seam.
 
-1. **Incoming** (`CallKitIncomingPresenter.present`): parse the `IDFON-LIVE/1` /
-   video invite envelope exactly as the Bar path does, then `reportNewIncomingCall`
-   **synchronously in the same turn as the envelope receipt** — never after an await.
+1. **Incoming** (`CallKitController.presentIncoming`): for a `call_kit` invite,
+   report the ticket-derived UUID **synchronously in the same turn as envelope
+   receipt** — never after an await. A later push deduplicates onto that call.
    The call `UUID` is derived deterministically from the invite ticket (hash → UUID),
    so re-delivered invites map to one CallKit call and the ghost-call rule below can
    dedupe. `CXCallUpdate`: peer display name, `.generic` handle, `hasVideo` from the
@@ -128,18 +128,13 @@ instance at app start. Flipping
    didActivate` markers log category/mode on both sides of the handover — a
    device console shows exactly what the system activated. `CallTones` is
    silent on this path (the system ringtone).
-7. **One incoming bar at a time, by arrival transport** (ui-design-notes §6): a
-   ring **push** is always reported to CallKit — the app can be deactivated at
-   any moment, so the system bar must exist before it does — and while that
-   system call is up it IS the ring (the Bar stays out of `.incoming`). A ring
-   that arrived over **iroh** never gets a system bar: the envelope is queued
-   before the push is sent, so on a live app it wins the race and the Bar rings
-   it (a late push for that generation is ignored). The Bar's appearance is
-   thus fully ours: it rings exactly when no system bar exists. Accepting from
-   either surface hides the incoming bar, shows the in-progress overlay, and
-   navigates to the caller's chat — the CallKit accept handler owns the
-   navigation. Exactly one ringtone. The deferral behavior for unavailable
-   CallKit stays exactly as-is.
+7. **One incoming surface per call generation** (ui-design-notes §6): a
+   `call_kit` invite carries its mode and ticket-derived UUID, so the receiver
+   reports CallKit whether the iroh invite or VoIP push arrives first; the later
+   transport deduplicates. CallKit owns the ring and the Bar stays out of
+   `.incoming`. A `bar` invite uses the in-app Bar and sends no VoIP push.
+   Legacy or stale VoIP pushes still follow PushKit's report requirement. Both
+   answer paths land on the same machines; only one ringtone plays.
 8. **Races to design against** (the verified bug list below): serialize all
    `CXTransaction` requests on one queue and never touch a call UUID before its
    start/answer action completed (unknownCallUUID, code 4); a superseded invite or
@@ -231,7 +226,7 @@ on). If a "hide from call log" preference is ever wanted, that is the switch.
    `pushRegistry(_:didReceiveIncomingVoIPPushWith:metadata:withCompletionHandler:)`
    — implementing only the classic delegate means the push is **dropped
    before the app** on iOS 27 (verified on hardware). The delegate reports
-   `presentPush` in the same turn (payload `call_uuid`; names resolve from the
+   `presentIncoming` synchronously (payload `call_uuid`; names resolve from the
    persisted multi-ref peer cache — never a raw id hash, "Idfon caller" until
    the live records refine the UI) and the invite envelope dedupes onto the
    pushed call via the P1 UUID mapping. An answer that beats the envelope arms

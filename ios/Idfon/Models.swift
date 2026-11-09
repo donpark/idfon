@@ -1,8 +1,7 @@
 import Foundation
 
-/// How an incoming call is presented for one channel
-/// (docs/ui-design-notes.md §6, docs/protocol.md). Bar is the interim
-/// default.
+/// How calls with one contact use iOS system calling or the in-app Bar.
+/// The in-app Bar is the default; CallKit is the explicit system-call choice.
 ///
 /// Decoded leniently: an unrecognized wire value resolves to `.bar` rather
 /// than throwing, so a future daemon mode iOS does not know never breaks
@@ -12,7 +11,8 @@ enum IncomingCallMode: String, Decodable, CaseIterable {
     case callKit = "call_kit"
 
     var wireValue: String { rawValue }
-    var title: String { self == .bar ? "Bar" : "System ring" }
+    var title: String { self == .bar ? "In-app only" : "System call" }
+    var usesCallKit: Bool { self == .callKit }
 
     init(from decoder: Decoder) throws {
         let raw = try? decoder.singleValueContainer().decode(String.self)

@@ -178,7 +178,7 @@ How an arriving call is presented is a per-channel decision, not a global app se
 
 | Mode | Presentation | Notes |
 | --- | --- | --- |
-| **CallKit** | System call UI (`CXProvider`), presented by iOS | Requires PushKit VoIP push; see `docs/callkit-integration.md` for the APNs/push constraints and pitfalls |
+| **CallKit** | System call UI (`CXProvider`), presented by iOS | Foreground invites can report directly; background reachability requires PushKit VoIP and a registered device (`docs/callkit-integration.md`) |
 | **Live Activity Bar** | In-app ringing surface, presented by the Bar's own higher-level window above the overlay | No lock-screen UI; the app must own `AVAudioSession` |
 
 The split follows the relationship, not the transport:
@@ -190,9 +190,9 @@ So the mode is chosen when a channel is set up, by how reachable its person is e
 
 Both modes funnel into the **same call state machine** — the mode only selects who owns incoming-ring presentation. The routing point sits in front of `VideoCall`/`CallSession` `handleEnvelope`, keyed by the sending channel's configuration.
 
-* **Default: Live Activity Bar.** CallKit integration has landed (`docs/callkit-integration.md`): `bar` remains the default and `call_kit` is opt-in per channel. A channel never silently switches modes at runtime — a failed CallKit presentation falls back to the Bar explicitly (`forceBarFallback`).
-* **One incoming bar at a time, by arrival transport.** A ring push is always reported to CallKit (the app can be deactivated at any moment) and that system bar is the ring — the Bar stays out of `.incoming` while it is up. A ring that arrived over iroh never gets a system bar (the envelope beats the push on a live app), so the Bar rings it. Both answer routes land on the same machines; the ringtone stays single.
-* **An unreachable or disabled CallKit mode must not affect the Bar path.** The two are independent; the Bar is fully functional without PushKit, APNs, or VoIP entitlements.
+* **Default: Live Activity Bar.** `bar` remains the default; `call_kit` is an explicit per-contact choice in Contact Details. The setting applies to calls placed to that contact: CallKit owns the outgoing call and a VoIP push is sent for background reachability. In-app-only calls do not send VoIP pushes and cannot wake a suspended app.
+* **One presentation per call generation.** A CallKit-mode invite carries the mode and ticket-derived call UUID. The receiver reports that same UUID whether the iroh invite or PushKit wake arrives first; the later arrival deduplicates. Bar-mode invites stay in the Bar. PushKit callbacks report synchronously before completing, including the legacy delegate path that must report every VoIP push.
+* **CallKit failure falls back to the Bar.** A failed local CallKit presentation explicitly falls back (`forceBarFallback`). The Bar path remains functional without PushKit/APNs, but is foreground-only.
 
 Incoming surface is **inline Answer/Decline in the Bar** (decided, implemented — no fullscreen
 ringing screen on the Bar path). Outgoing-pending: the nav-bar Call item flips to the

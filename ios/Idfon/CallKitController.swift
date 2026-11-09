@@ -83,16 +83,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
         return call.peerId == peerId
     }
 
-    /// Push-first ring (P2): the payload's `call_uuid` is the caller's
-    /// `CallUUID.from(invite ticket)`, so the envelope dedupes onto this call
-    /// when it lands. The only path that reports a ring — one that arrived
-    /// over iroh never gets a system bar (#7). Reported before anything else —
-    /// a VoIP push that does not result in a reported call is grounds for app
-    /// termination.
-    /// `endImmediately` serves `mustReport` pushes for a bar-mode channel:
+    /// Reports an incoming call from either the signed invite or PushKit.
+    /// Both use the ticket-derived UUID, so whichever arrives second dedupes
+    /// onto the same system call. A VoIP push that must be reported calls this
+    /// before its PushKit completion handler.
+    /// `endImmediately` serves a stale push that still must be reported:
     /// report first, end once the report completes (never before — ending a
     /// call whose registration has not completed fails the report, #58).
-    func presentPush(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
+    func presentIncoming(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
         guard !callerId.isEmpty, !callUUID.isEmpty else {
             Diag.log("wake", ["call": callUUID, "outcome": "skip_no_ids"])
             return
@@ -321,7 +319,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
     func mirror(owner: Owner, phase: Phase) {
         switch phase {
         case .incoming:
-            break // the ring was reported when it arrived (presentPush)
+            break // the system ring was reported before the machine transition
         case .calling:
             guard var call = current, call.owner == owner, call.outgoing,
                   !call.connectingReported else { return }

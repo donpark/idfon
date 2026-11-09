@@ -14,9 +14,8 @@ final class IncomingCallRouter {
     static let shared = IncomingCallRouter()
 
     /// The CallKit platform gate (docs/callkit-integration.md): iOS can
-    /// present system rings at all. Presentation happens only on the ring-push
-    /// path (`presentPush`) — a ring that arrived over iroh never gets a
-    /// system bar.
+    /// present system rings at all. A CallKit-mode invite or PushKit wake
+    /// reports the same ticket-derived system call.
     @MainActor
     enum CallKitIncomingPresenter {
         static let isAvailable = true
@@ -52,24 +51,19 @@ final class IncomingCallRouter {
     /// Display name for the system call UI, or nil when no named peer matches.
     func name(for ref: String) -> String? { names[ref] }
 
-    /// CallKit owns incoming-ring presentation — always, per platform
-    /// design (iOS: the system call UI is THE surface; macOS has no CallKit
-    /// and uses the app's Bar instead). The only demotion is the fallback:
-    /// a failed CallKit report hands the channel to the Bar
-    /// (`forceBarFallback`, an explicit switch, never a silent mode change).
+    /// A configured system-call channel uses CallKit for outgoing and live
+    /// incoming calls. A failed CallKit presentation falls back to the Bar.
     func ownsPresentation(for peerId: String) -> Bool {
-        CallKitIncomingPresenter.isAvailable
-            && !barFallback.contains(peerId)
+        mode(for: peerId).usesCallKit && canPresentCallKit(for: peerId)
     }
 
-    /// Whether this channel accepts a system ring at all. The **sender's**
-    /// `call_mode` opt-in decides whether a channel rings (`ring()` is gated
-    /// there); the receiver honors the ring unless its own CallKit
-    /// presentation has failed for this channel (`barFallback`). The
-    /// receiver's own mode governs only how *it* presents an arriving call
-    /// when running (`ownsPresentation` on the envelope path) — gating the
-    /// push on it broke the wake (the wire collapses unset into bar,
-    /// donpark/idfon#47, #57).
+    func canPresentCallKit(for peerId: String) -> Bool {
+        CallKitIncomingPresenter.isAvailable && !barFallback.contains(peerId)
+    }
+
+    /// Whether a delivered VoIP push can be shown through CallKit. The
+    /// caller's per-contact mode gates push creation; the receiver falls back
+    /// to its Bar only after a CallKit presentation failure.
     func ringsViaSystem(for ref: String) -> Bool {
         !barFallback.contains(ref)
     }
@@ -104,18 +98,28 @@ final class IncomingCallRouter {
         UserDefaults.standard.set(modes.mapValues(\.wireValue), forKey: Self.modesKey)
     }
 
-    /// Routes an invite envelope from `peerId` and hands it to the machines.
-    /// The arrival transport decides the surface (docs/callkit-integration.md
-    /// #7): a ring that arrived over iroh never gets a CallKit bar — only the
-    /// ring-push path reports one — so the Bar may ring it. Only invites go
-    /// through here; `call_started`/`call_stopped` stay direct to both
-    /// machines.
+    /// Routes an invite from `peerId` and hands it to the call machines.
+    /// Report the same ticket-derived UUID before machine notifications so a
+    /// CallKit channel has one system ring whether its push or iroh invite wins.
     func route(peerId: String, envelope text: String) {
         idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue)")
+        let machinesIdle: Bool
+        if case .idle = LiveCall.shared.state, VideoCall.shared.state == .idle {
+            machinesIdle = true
+        } else {
+            machinesIdle = false
+        }
+        if machinesIdle, let invite = LiveInvite.parse(text), invite.isStart,
+           !invite.isReturn, !invite.ticket.isEmpty, invite.callMode?.usesCallKit == true,
+           canPresentCallKit(for: peerId) {
+            CallKitController.shared.presentIncoming(
+                callUUID: CallUUID.from(ticket: invite.ticket).uuidString,
+                callerId: peerId, hasVideo: invite.isCall)
+        }
         LiveCall.shared.handleEnvelope(peer: peerId, text)
         VideoCall.shared.handleEnvelope(peer: peerId, text)
-        // A push-first wake answered while the invite was in flight completes
-        // now that a machine can answer (docs/callkit-integration.md, P2).
+        // A CallKit answer that beat the invite completes now that a machine
+        // can answer (docs/callkit-integration.md, P2).
         CallKitController.shared.envelopeArrived()
     }
 

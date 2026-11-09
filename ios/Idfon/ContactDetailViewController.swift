@@ -39,6 +39,7 @@ final class ContactDetailViewController: UIViewController {
         var tts: SpeechChoice?
         var turnMode: VoiceTurnMode = .passive
         var turnModel: TurnTakerMode = .auto
+        var callMode: IncomingCallMode = .bar
     }
 
     private var draft = Draft()
@@ -59,9 +60,11 @@ final class ContactDetailViewController: UIViewController {
     private let generationButton = UIButton(type: .system)
     private let turnModeButton = UIButton(type: .system)
     private let turnModelButton = UIButton(type: .system)
+    private let callModeButton = UIButton(type: .system)
     private let codecButton = UIButton(type: .system)
     private let turnModeCaption = UILabel()
     private let turnModelCaption = UILabel()
+    private let callModeCaption = UILabel()
     private let codecCaption = UILabel()
 
     // MARK: Identity
@@ -110,7 +113,7 @@ final class ContactDetailViewController: UIViewController {
         nameField.addTarget(self, action: #selector(save), for: .editingDidEndOnExit)
 
         for button in [kindButton, recognitionButton, generationButton, turnModeButton, turnModelButton,
-                       codecButton] {
+                       callModeButton, codecButton] {
             button.showsMenuAsPrimaryAction = true
             button.contentHorizontalAlignment = .leading
             button.titleLabel?.font = .preferredFont(forTextStyle: .body)
@@ -118,7 +121,7 @@ final class ContactDetailViewController: UIViewController {
         }
         instantSwitch.addTarget(self, action: #selector(pickChanged), for: .valueChanged)
         voiceSwitch.addTarget(self, action: #selector(pickChanged), for: .valueChanged)
-        for caption in [turnModeCaption, turnModelCaption, codecCaption] {
+        for caption in [turnModeCaption, turnModelCaption, callModeCaption, codecCaption] {
             caption.font = .preferredFont(forTextStyle: .caption1)
             caption.textColor = .secondaryLabel
             caption.numberOfLines = 0
@@ -216,6 +219,10 @@ final class ContactDetailViewController: UIViewController {
                 voiceSwitch.isOn = draft.voiceEnabled
                 rows += [labeledRow("Voice Calls", voiceSwitch, alignment: .center)]
             }
+            if agent == nil {
+                rebuildCallMode()
+                rows += [labeledRow("Call handling", callModeButton), callModeCaption]
+            }
         } else {
             callButton.isHidden = agent == nil && !ContactCallProfiles.isCallable(peer.id)
             rows += [
@@ -228,6 +235,7 @@ final class ContactDetailViewController: UIViewController {
                 rows += [
                     valueRow("Instant Call", draft.instant ? "On" : "Off"),
                     valueRow("Voice Calls", draft.voiceEnabled ? "On" : "Off"),
+                    valueRow("Call handling", draft.callMode.title),
                 ]
             }
         }
@@ -353,6 +361,7 @@ final class ContactDetailViewController: UIViewController {
         draft.tts = ContactSpeech.stored(for: peerID, slot: .generation)
         draft.turnMode = ContactVoiceTurnModes.mode(for: peerID)
         draft.turnModel = TurnTakerSetting.mode(for: peerID)
+        draft.callMode = IncomingCallRouter.shared.mode(for: peer.id)
     }
 
     @objc private func pickChanged() {
@@ -457,6 +466,24 @@ final class ContactDetailViewController: UIViewController {
 
     // MARK: - Voice turns
 
+    private func rebuildCallMode() {
+        callModeButton.setTitle(draft.callMode.title, for: .normal)
+        callModeButton.menu = UIMenu(title: "Call handling", children: IncomingCallMode.allCases.map { option in
+            UIAction(
+                title: option.title,
+                subtitle: option == .callKit
+                    ? "Uses iOS calling and can wake a registered device when Idfon is closed."
+                    : "Uses the in-app call bar; it cannot wake a suspended app.",
+                state: option == draft.callMode ? .on : .off
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.draft.callMode = option
+                self.rebuildCallMode()
+            }
+        })
+        callModeCaption.text = "Applies when calling this contact. Background ringing also depends on their device's push registration."
+    }
+
     private func rebuildTurns() {
         turnModeButton.setTitle(draft.turnMode.title, for: .normal)
         turnModeButton.menu = UIMenu(title: "Voice turns", children: VoiceTurnMode.allCases.map { option in
@@ -519,6 +546,9 @@ final class ContactDetailViewController: UIViewController {
                     if draft.instant != peer.instantCall {
                         try await client.updatePeerFlags(
                             ref: peer.id, identity: peer.identity, instantCall: draft.instant)
+                    }
+                    if draft.callMode != peer.incomingCallMode {
+                        try await IncomingCallRouter.shared.setMode(draft.callMode, for: peer.id)
                     }
                 }
                 await MainActor.run {

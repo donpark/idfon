@@ -54,6 +54,7 @@ struct LiveInvite {
     let media: String?
     let isCall: Bool // media=video-call (live camera call)
     let isReturn: Bool // holder response to an outgoing call
+    let callMode: IncomingCallMode?
     let ticket: String
 
     static func parse(_ text: String) -> LiveInvite? {
@@ -79,13 +80,17 @@ struct LiveInvite {
             media: media,
             isCall: media == "video-call",
             isReturn: fields["return"] == "1",
+            callMode: fields["call_mode"].flatMap(IncomingCallMode.init(rawValue:)),
             ticket: fields["ticket"] ?? ""
         )
     }
 
-    static func build(action: String, ticket: String, call: Bool) -> String {
+    static func build(
+        action: String, ticket: String, call: Bool, callMode: IncomingCallMode = .bar
+    ) -> String {
         let media = call ? "video-call" : "video"
-        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)"
+        let mode = action == "start" && callMode.usesCallKit ? "\ncall_mode=call_kit" : ""
+        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(mode)"
     }
 }
 
@@ -429,7 +434,11 @@ final class VideoCall: NSObject {
         Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 apply(.published(ticket: ticket))
                 applySendState() // a toggle during `.calling` may predate the publish
-                try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
+                try await client.sendText(
+                    to: id,
+                    LiveInvite.build(
+                        action: "start", ticket: ticket, call: true,
+                        callMode: IncomingCallRouter.shared.mode(for: id)))
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
                 // invite ticket's, so push and envelope share one call). Not

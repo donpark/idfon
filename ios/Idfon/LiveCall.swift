@@ -470,12 +470,14 @@ final class LiveCall {
                     context += context.isEmpty ? "show=\(show)" : "\nshow=\(show)"
                 }
                 let inviteContext = context.isEmpty ? nil : context
+                let callModeLine = IncomingCallRouter.shared.mode(for: peerId).usesCallKit
+                    ? "\ncall_mode=call_kit" : ""
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 _ = try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
                 let inviteOperation = try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))\(callModeLine)"
                 )
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
