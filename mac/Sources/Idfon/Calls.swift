@@ -235,7 +235,8 @@ final class LiveCall {
                 try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
                 try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))",
+                    fanout: true
                 )
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
@@ -287,10 +288,11 @@ final class LiveCall {
                 applySendState()
                 try await client.sendText(
                     to: pending.peer,
-                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)",
+                    fanout: true
                 )
                 // Informational parity with core.ts's video answer branch.
-                try await client.sendText(to: pending.peer, "call_started")
+                try await client.sendText(to: pending.peer, "call_started", fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -410,7 +412,8 @@ final class LiveCall {
         do {
             try await client.sendText(
                 to: peer,
-                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)",
+                fanout: true
             )
             idfonLog("idfon live: re-published mic leg channels=\(channels)")
         } catch {
@@ -453,7 +456,7 @@ final class LiveCall {
             CallFeedback.post("A call is already in progress.")
         case .sendStop(let peer, let ticket):
             if let ticket {
-                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false)) }
+                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false), fanout: true) }
             } else {
                 // The call never got a generation (ended before its publish
                 // landed): legacy bare stop.
@@ -548,7 +551,7 @@ final class LiveCall {
             media_live_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false), fanout: true)
         }
     }
 
@@ -781,7 +784,7 @@ final class VideoCall {
             media_video_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true))
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true), fanout: true)
         }
     }
 
@@ -848,7 +851,7 @@ final class VideoCall {
         // call's original ticket (CallLifecycle.generation).
         applySendState()
         do {
-            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true))
+            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true), fanout: true)
             idfonLog("idfon video: re-published tracks channels=\(channels)")
         } catch {
             idfonError("idfon video: re-publish invite failed: \(error)")
@@ -947,7 +950,7 @@ final class VideoCall {
                 publishedChannels = AudioMeter.captureChannelsForCall()
                 apply(.published(ticket: ticket))
                 applySendState()
-                try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
+                try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true), fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
                 // invite ticket's, so push and envelope share one call).
@@ -999,7 +1002,7 @@ final class VideoCall {
                 published = true
                 publishedChannels = AudioMeter.captureChannelsForCall()
                 applySendState()
-                try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
+                try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true), fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -1132,7 +1135,7 @@ final class VideoCall {
             CallFeedback.post("A call is already in progress.")
         case .sendStop(let peer, let ticket):
             if let ticket {
-                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true)) }
+                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true), fanout: true) }
             } else {
                 // The call never got a generation (ended before its publish
                 // landed): legacy bare stop.

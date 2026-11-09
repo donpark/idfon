@@ -267,7 +267,7 @@ final class VideoCall: NSObject {
         // call's original ticket (CallLifecycle.generation).
         applySendState()
         do {
-            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true))
+            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true), fanout: true)
             idfonLog("idfon video: re-published tracks channels=\(channels)")
         } catch {
             idfonError("idfon video: re-publish invite failed: \(error)")
@@ -448,7 +448,8 @@ final class VideoCall: NSObject {
                     to: id,
                     LiveInvite.build(
                         action: "start", ticket: ticket, call: true,
-                        callMode: IncomingCallRouter.shared.mode(for: id)))
+                        callMode: IncomingCallRouter.shared.mode(for: id)),
+                    fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
                 // invite ticket's, so push and envelope share one call). Not
@@ -534,7 +535,7 @@ final class VideoCall: NSObject {
         Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 applySendState()
                 idfonLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
-                try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
+                try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true), fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -565,7 +566,7 @@ final class VideoCall: NSObject {
             media_video_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            _ = try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true))
+            _ = try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true), fanout: true)
         }
     }
 
@@ -667,7 +668,7 @@ final class VideoCall: NSObject {
             // though the audio stop drops the app's suspension exemption.
             let client = self.client
             AppBackgroundTask.run {
-                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: true))
+                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: true), fanout: true)
             }
         case .join(let ticket, let answersDial):
             Task { await self.join(ticket: ticket, answered: answersDial) }

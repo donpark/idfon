@@ -184,47 +184,16 @@ impl TransportMode {
                 message,
             );
         }
-        let mut targets = peer.dial_targets_with(policy);
-        if matches!(
-            policy.map(|policy| &policy.mode),
-            Some(idfon_protocol::DeliveryMode::One) | None
-        ) {
-            targets.truncate(1);
-        }
-        if targets.is_empty() {
-            return Err(io::Error::other("peer has no endpoint address"));
-        }
-        let all = matches!(
-            policy.map(|policy| &policy.mode),
-            Some(idfon_protocol::DeliveryMode::All)
-        );
-        let mut last_error = None;
-        let mut last_ack = None;
-        for (endpoint_id, address) in targets {
+        let targets = peer.dial_targets_with(policy);
+        deliver(policy, targets, |endpoint_id, address| {
             tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, telemetry = ?message.telemetry, target_bytes = address.len(), "transport send attempt");
-            match self.send_to(identity, &address, message) {
-                Ok(ack) => {
-                    tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, status = ?ack.status, "transport send acknowledged");
-                    last_ack = Some(ack);
-                    if !all {
-                        return last_ack.ok_or_else(|| io::Error::other("missing acknowledgement"));
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, error = %error, "transport send failed");
-                    last_error = Some(error);
-                    if !all {
-                        break;
-                    }
-                }
+            let result = self.send_to(identity, address, message);
+            match &result {
+                Ok(ack) => tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, status = ?ack.status, "transport send acknowledged"),
+                Err(error) => tracing::error!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, error = %error, "transport send failed"),
             }
-        }
-        match (last_ack, last_error) {
-            (Some(ack), None) => Ok(ack),
-            (Some(ack), Some(_)) => Ok(ack),
-            (None, Some(error)) => Err(error),
-            (None, None) => Err(io::Error::other("peer has no endpoint address")),
-        }
+            result
+        })
     }
 
     /// One dial attempt against a single serialized `EndpointAddr`.
@@ -251,6 +220,51 @@ impl TransportMode {
                 .join()
                 .map_err(|_| io::Error::other("transport worker panicked"))?
         })
+    }
+}
+
+/// The device-delivery loop (`docs/multi-device.md`): no policy or `One`
+/// dials the first target only; `Failover` walks the device list until one
+/// acknowledges; `All` delivers to every device. Extracted so the policy
+/// semantics are host-testable.
+fn deliver(
+    policy: Option<&idfon_protocol::DeliveryPolicy>,
+    mut targets: Vec<(String, String)>,
+    mut send_to: impl FnMut(&str, &str) -> io::Result<idfon_protocol::MessageAck>,
+) -> io::Result<idfon_protocol::MessageAck> {
+    let mode = policy.map(|policy| &policy.mode);
+    if matches!(mode, Some(idfon_protocol::DeliveryMode::One) | None) {
+        targets.truncate(1);
+    }
+    if targets.is_empty() {
+        return Err(io::Error::other("peer has no endpoint address"));
+    }
+    let all = matches!(mode, Some(idfon_protocol::DeliveryMode::All));
+    let mut last_error = None;
+    let mut last_ack = None;
+    for (endpoint_id, address) in targets {
+        match send_to(&endpoint_id, &address) {
+            Ok(ack) => {
+                if !all {
+                    return Ok(ack);
+                }
+                last_ack = Some(ack);
+            }
+            Err(error) => {
+                last_error = Some(error);
+                // Failover keeps walking the device list; only `One` (a
+                // single target anyway) stops at the first failure. Breaking
+                // here used to disable failover entirely (C17).
+                if matches!(mode, Some(idfon_protocol::DeliveryMode::One)) {
+                    break;
+                }
+            }
+        }
+    }
+    match (last_ack, last_error) {
+        (Some(ack), _) => Ok(ack),
+        (None, Some(error)) => Err(error),
+        (None, None) => Err(io::Error::other("peer has no endpoint address")),
     }
 }
 
@@ -7068,6 +7082,86 @@ mod tests {
     /// A send before the transport binds fails closed, retryably, and records
     /// nothing: a queued operation would end up marked Failed for good
     /// instead of waiting for the bind to finish.
+    #[test]
+    fn delivery_policy_walks_the_device_list() {
+        use idfon_protocol::{AckStatus, DeliveryMode, DeliveryPolicy, MessageAck};
+        let targets = || {
+            vec![
+                ("dev-a".to_owned(), "addr-a".to_owned()),
+                ("dev-b".to_owned(), "addr-b".to_owned()),
+            ]
+        };
+        let ok = |id: &str| {
+            Ok(MessageAck {
+                message_id: id.to_owned(),
+                status: AckStatus::Accepted,
+            })
+        };
+
+        // Failover (the call path): a dead first device must not stop the
+        // second from ringing (C17).
+        let policy = DeliveryPolicy {
+            mode: DeliveryMode::Failover,
+            ..Default::default()
+        };
+        let mut tried = Vec::new();
+        let result = deliver(Some(&policy), targets(), |device, _addr| {
+            tried.push(device.to_owned());
+            if device == "dev-a" {
+                Err(io::Error::other("connect timed out"))
+            } else {
+                ok("m1")
+            }
+        });
+        assert!(result.is_ok(), "failover must try the next device");
+        assert_eq!(tried, ["dev-a", "dev-b"]);
+
+        // One: the first target only.
+        let policy = DeliveryPolicy {
+            mode: DeliveryMode::One,
+            ..Default::default()
+        };
+        let mut tried = Vec::new();
+        let result = deliver(Some(&policy), targets(), |device, _addr| {
+            tried.push(device.to_owned());
+            Err(io::Error::other("connect timed out"))
+        });
+        assert!(result.is_err());
+        assert_eq!(tried, ["dev-a"]);
+
+        // All: every device; any ack wins.
+        let policy = DeliveryPolicy {
+            mode: DeliveryMode::All,
+            ..Default::default()
+        };
+        let mut tried = Vec::new();
+        let result = deliver(Some(&policy), targets(), |device, _addr| {
+            tried.push(device.to_owned());
+            if device == "dev-a" {
+                Err(io::Error::other("connect timed out"))
+            } else {
+                ok("m1")
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(tried, ["dev-a", "dev-b"]);
+
+        // Failover with every device dead: fail.
+        let policy = DeliveryPolicy {
+            mode: DeliveryMode::Failover,
+            ..Default::default()
+        };
+        assert!(deliver(Some(&policy), targets(), |_, _| Err(io::Error::other("down"))).is_err());
+        // No policy keeps the classic single-target default.
+        let mut tried = Vec::new();
+        assert!(deliver(None, targets(), |device, _addr| {
+            tried.push(device.to_owned());
+            ok("m1")
+        })
+        .is_ok());
+        assert_eq!(tried, ["dev-a"]);
+    }
+
     #[test]
     fn sends_fail_closed_before_the_transport_binds() {
         let dir = temp_dir("send-without-transport");

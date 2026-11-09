@@ -170,7 +170,8 @@ final class LiveCall {
         do {
             try await client.sendText(
                 to: peer,
-                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)",
+                fanout: true
             )
             idfonLog("idfon live: re-published mic leg channels=\(channels)")
         } catch {
@@ -273,7 +274,7 @@ final class LiveCall {
             // though the audio stop drops the app's suspension exemption.
             let client = self.client
             AppBackgroundTask.run {
-                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false))
+                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false), fanout: true)
             }
         case .join(let ticket, _):
             // The peer answered our dial (or re-published a fresh ticket):
@@ -477,7 +478,8 @@ final class LiveCall {
                 _ = try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
                 let inviteOperation = try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))\(callModeLine)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))\(callModeLine)",
+                    fanout: true
                 )
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
@@ -576,10 +578,11 @@ final class LiveCall {
                 // Audio invite: no media line (audio is the default).
                 try await client.sendText(
                     to: pending.peer,
-                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)",
+                    fanout: true
                 )
                 // Informational parity with core.ts's video answer branch.
-                try await client.sendText(to: pending.peer, "call_started")
+                try await client.sendText(to: pending.peer, "call_started", fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -609,7 +612,7 @@ final class LiveCall {
             media_live_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            _ = try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
+            _ = try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false), fanout: true)
         }
     }
 
