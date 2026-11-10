@@ -433,7 +433,7 @@ impl LocalRoute for PushRoutes {
             && matches!(
                 path,
                 "/_push/register" | "/_push/unregister" | "/_push/ring" | "/_push/cancel"
-                    | "/_push/pull"
+                    | "/_push/pull" | "/_push/health"
             )
     }
 
@@ -616,6 +616,31 @@ impl PushRoutes {
                         serde_json::json!({ "ok": true, "rung": sent }),
                     )
                 }
+                "health" => {
+                    // Tier-1 diagnostics (`docs/mcp-control.md`): the ref's
+                    // holder may see its wake-channel health. Counts only —
+                    // no token ever leaves this response.
+                    if !issued_by_ref {
+                        return json(StatusCode::FORBIDDEN, "ticket not issued by this ref");
+                    }
+                    let entries = self.store.entries(account);
+                    let topics: std::collections::BTreeSet<&str> =
+                        entries.iter().map(|(_, topic)| topic.as_str()).collect();
+                    let offers = self.offers.lock().unwrap_or_else(|error| error.into_inner());
+                    let pending = offers
+                        .values()
+                        .filter(|offer| offer.account == account && offer.expires > Instant::now())
+                        .count();
+                    json(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "registered_tokens": entries.len(),
+                            "topics": topics,
+                            "pending_offers": pending,
+                            "apns_configured": self.apns.is_some(),
+                        }),
+                    )
+                }
                 "pull" => {
                     // The ref's holder fetches its own pending invite
                     // (self-issued ticket, the registration rule).
@@ -775,6 +800,46 @@ mod tests {
             &key,
         )
         .expect("JWT signing must have a crypto provider");
+    }
+
+    #[test]
+    fn health_reports_counts_and_never_tokens() {
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let other_key = generate_identity();
+        let (_store, routes) = routes(Some(MockApns::new()));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/register",
+            Some(&ticket),
+            serde_json::json!({ "voip_token": "token-secret", "topic": "com.idfon.ios.voip" }),
+        );
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, body) = post(
+            &routes,
+            &account,
+            "/_push/health",
+            Some(&ticket),
+            serde_json::json!({}),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["registered_tokens"], 1);
+        assert_eq!(body["apns_configured"], true);
+        assert!(!body.to_string().contains("token-secret"), "health never leaks tokens");
+
+        let foreign = self_ticket(&other_key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/health",
+            Some(&foreign),
+            serde_json::json!({}),
+        );
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[test]

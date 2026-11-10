@@ -1,6 +1,9 @@
 # MCP control surface: approval model
 
-**Status:** design (2026-11-10). Companion to `docs/mcp-transport.md` (the
+**Status:** slice 1 implemented (2026-11-10) — the tools below are live
+(`diag.tail` / `wake.trace` in `idfon-mcp`, `/_push/health` on the edge,
+daemon-side view materialization from `IDFON-DIAG/1` envelopes); the approval
+model below is design. Companion to `docs/mcp-transport.md` (the
 transport binding), `docs/diag.md` (`IDFON-DIAG/1`), and
 `docs/callkit-brittleness.md` (why this exists: every incident becomes a
 *question* instead of log archaeology).

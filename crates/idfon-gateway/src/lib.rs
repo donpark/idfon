@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use futures_util::FutureExt as _;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -732,9 +733,24 @@ async fn handle_inner<B: Backend, A: Authorizer>(
             .find(|route| route.matches(request.method(), &account, &path))
         {
             let method = request.method().clone();
-            let response = route
-                .handle(&method, &account, &path, &headers, uri, request.into_body())
-                .await;
+            // C22: a panicking route must answer, not kill the connection —
+            // an abort mid-request leaves the client with a bare -1005
+            // "network connection was lost" and no access-log line (the C19
+            // debugging trap). Catch it, 500, and log.
+            let response = match std::panic::AssertUnwindSafe(
+                route.handle(&method, &account, &path, &headers, uri, request.into_body()),
+            )
+            .catch_unwind()
+            .await
+            {
+                Ok(response) => response,
+                Err(_) => {
+                    eprintln!(
+                        "[idfon.gateway] local route panicked; answering 500 (method={method} account={account} path={path})"
+                    );
+                    plain(StatusCode::INTERNAL_SERVER_ERROR, "route panicked")
+                }
+            };
             return (response, None, Some(account));
         }
     }

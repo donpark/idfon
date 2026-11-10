@@ -10,6 +10,7 @@ use std::{
 };
 
 mod blob;
+mod diag_views;
 mod live;
 mod mcp;
 mod relay_auth;
@@ -3425,7 +3426,10 @@ fn send_message(
         &serde_json::json!({"to": to, "text": text, "conversation": conversation}),
     )
     .unwrap();
+    // Diagnostics pass through here on their way to the monitor: keep a copy
+    // as queryable views (`docs/mcp-control.md` slice 1). Best-effort.
     let mut state = store.lock().expect("store mutex poisoned");
+    crate::diag_views::record(&state.data_dir, &text);
     let identity = match state
         .identities
         .iter()
