@@ -330,6 +330,53 @@ answer, media-ready, and cancel/end. Without these, “no ring” conflates “n
 “no APNs request,” “APNs accepted but not delivered,” and “CallKit declined the
 report.”
 
+## Race conditions: inventory and the anti-race toolkit
+
+Races are the meta-cause behind much of this ledger (C1, C7, C10, C16, C20,
+C21, C23, #58, #60 are all races). They cannot be eliminated in a
+distributed, push-driven, multi-device system — "rock solid" means **every
+interleaving lands in an accepted state**. That is achieved by enumerating
+invariants (one live call per generation; every must-report push ends in a
+reported call; a stop ends exactly its call; the answer cue fires exactly
+once; a late artifact never resurrects a dead call…) and making every
+transition preserve them under any ordering. The mechanisms below are how
+this codebase enforces them — new call-path code should use these, not invent
+synchronisation.
+
+| Race (where it bit) | The simple mechanism that tames it |
+|---|---|
+| Report-then-end (#58): ending before the report completes fails the report | Order the irreversible, system-facing action **first**; reconcile after its completion callback |
+| `unknownCallUUID` code 4: touching a UUID before its action completes | Serialize all `CXTransaction`s on one queue; never touch a call before its start/answer action lands |
+| Push vs invite arriving in either order | One **ticket-derived UUID** for both transports; whichever arrives second dedupes onto it |
+| Duplicate push / redelivery (C16) | Re-report the same UUID and let the duplicate rejection count — idempotence over cleverness |
+| Quick cancel vs late pull/invite (C16/P1) | **Epoch/state check before acting on late data** (`stillExpects`): discard stale work instead of trying to prevent it |
+| Stale stop vs the next call (#60/C10) | **Generation tickets** carried by every stop; an artifact names exactly one call |
+| Late async media starts after teardown (C7) | **Publish epoch guards**: work carries the epoch it started for; on completion, a moved-on epoch discards the result |
+| Ring loop vs queued stop (C1): the stop cleared the just-stored loop | **One owner queue per resource** — serialize mutations (the AudioIO queue fix); serialization beats synchronisation |
+| pkarr publish vs first lookup (C20) | **Carry the result, don't re-resolve** (the `addr=` line); when resolution is unavoidable, retry with fresh state, never the poisoned cache |
+| Duplicate delivery / event replay (join twice) | Idempotent joins (`joinedTicket`), message-id dedupe at the daemon |
+| Event bursts stranded out of order (the `wait` truncate bug) | Restore ordering **at the source** (cursor order) — consumers must not sort it out |
+| Answer vs heavy publish (C23): the UI waited for media | **Split the quick signal from the heavy payload** (`call_started` at the tap; ticket later) |
+| Simultaneous mutual dial (C21, glare) | **Explicit tie-break, not prevention** (designed: the incoming call wins, our dial drops — needs the `return=1` wire flag so a return leg is distinguishable from a fresh invite; today Swift never sets it) |
+| Concurrent roster writes (multi-device) | Single writer or serialized updates at the edge — not distributed consensus |
+| Registration retry loop vs token update | One loop, newest token wins (the `registerWithRetries` shape) |
+
+**Toolkit, ranked by how often it saves you:**
+
+1. **Epochs/generations on every async job** — discard stale results. One
+   guard line per completion beats any lock.
+2. **One queue per resource** — every mutation of a resource ordered on one
+   queue turns races into deterministic sequences.
+3. **Idempotent operations** — retries, duplicates and replays become
+   harmless; the wrong order then costs nothing.
+4. **Deterministic precedence rules** — when two live states collide, a
+   written rule decides (newer ring supersedes stale; an answered call is
+   never stolen; the incoming call wins glare). Log which rule fired.
+5. **Bound every wait** — pending states with timeouts (the 20 s pending
+   answer, the dial watchdog): a race may delay a call but never hang it.
+6. **Wire the distinctions** — when the protocol cannot tell two cases apart
+   (a return leg vs a fresh invite!), the ambiguity *is* a race. Add the flag.
+
 ## Options
 
 | Option | Locked/suspended phone | Complexity | Main tradeoff |
