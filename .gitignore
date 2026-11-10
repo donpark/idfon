@@ -53,7 +53,7 @@ agents/*/invites.ndjson
 # artifacts (scripts/pack-tyger-models.mjs). Weights live on the model host
 # (HF donpark/tyger-models), NEVER in git — an oversized pack is also what
 # makes GitHub reject a push with "remote unpack failed".
-/dist/
+/dist
 *.mlpackage/
 *.aimodel/
 *.mlirb
@@ -63,7 +63,7 @@ agents/*/invites.ndjson
 weight.bin
 
 # Benchmark result history (scripts/relay-bench.sh)
-/bench-results/
+/bench-results
 /ports/tyger-swift/.build/
 /tools/*/.build/
 /tools/*/__pycache__/

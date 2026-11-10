@@ -12,6 +12,9 @@ add or materially change a doc, update the index.
 - `crates/iroh-c-ffi` — the FFI crate behind `libiroh_c_ffi.dylib` (workspace member; its artifact must be built before `idfond`).
 - `ios/Idfon`, `mac/Sources/Idfon` — the two native apps (duplicated UI code).
 - `agents/`, `integrations/` — Eve agents and the eve-idfon bridge.
+- `bench-results/`, `dist/` — symlinks to the shared generated-artifact store at
+  `~/.idfon/{bench-results,dist}` (multi-GB model-testing/training outputs, one
+  copy for all worktrees). Fresh worktree: run `scripts/link-artifacts.sh`.
 
 ## iOS shipping (TestFlight)
 
