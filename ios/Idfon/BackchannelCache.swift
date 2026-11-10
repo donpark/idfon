@@ -215,9 +215,7 @@ private final class RecordingSink: AudioSink, @unchecked Sendable {
     func play(wav: Data) async {}
 
     func play(_ buffer: AVAudioPCMBuffer) async {
-        lock.lock()
-        captured.append(buffer)
-        lock.unlock()
+        lock.withLock { captured.append(buffer) }
     }
 
     func playLooping(_ buffer: AVAudioPCMBuffer) {}

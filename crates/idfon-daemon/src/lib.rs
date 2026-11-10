@@ -8940,7 +8940,7 @@ mod tests {
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
         // Bind the default identity (endpoint id + public key) and give the
         // fake transport a ticket for it — the wiring `contact.export` needs.
-        let mut bound_name = String::new();
+        let bound_name;
         {
             let mut state = store.lock().unwrap();
             let identity = state

@@ -275,7 +275,7 @@ final class LiveCall {
             // though the audio stop drops the app's suspension exemption.
             let client = self.client
             AppBackgroundTask.run {
-                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false), fanout: true)
+                _ = try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false), fanout: true)
             }
         case .join(let ticket, _):
             // The peer answered our dial (or re-published a fresh ticket):

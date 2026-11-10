@@ -171,7 +171,7 @@ final class VoiceAgentSession: NSObject {
         }
         segmenter.onCommit = { [weak self] text in self?.handleCommit(text) }
         segmenter.start()
-        setupTask = Task { @MainActor in
+        setupTask = Task { @MainActor [self] in
             // Answer-path stage timings (docs/benchmarks.md §2): one
             // `voice-agent: answer` marker at the answered cue, so "time to
             // answer" is measurable per stage instead of guessed.
@@ -1334,7 +1334,7 @@ final class VoiceAgentSession: NSObject {
     }
 }
 
-extension VoiceAgentSession: ChatStoreObserver {
+extension VoiceAgentSession: @preconcurrency ChatStoreObserver {
     /// Store updates are the response-arrival signal: a new agent row for the
     /// turn supersedes reactions immediately, not at the next reply poll.
     func chatStoreDidUpdate() {

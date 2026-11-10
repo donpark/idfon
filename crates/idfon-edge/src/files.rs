@@ -271,15 +271,6 @@ impl FilesRoutes {
             .unwrap_or(false)
     }
 
-    fn block(&self, key: &str) {
-        let Ok(mut pins) = self.pins.lock() else {
-            return;
-        };
-        if pins.blocked.insert(key.to_owned()) {
-            self.persist_pins(&pins);
-        }
-    }
-
     fn role(&self, headers: &HeaderMap) -> Option<Role> {
         let presented = bearer(headers)?;
         if self

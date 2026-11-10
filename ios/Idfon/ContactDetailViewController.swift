@@ -298,7 +298,7 @@ final class ContactDetailViewController: UIViewController {
     private func endpointLabel() -> UILabel {
         let label = UILabel()
         label.numberOfLines = 0
-        if let agent {
+        if agent != nil {
             label.text = "On-device"
             label.font = .preferredFont(forTextStyle: .body)
         } else {

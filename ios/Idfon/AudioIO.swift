@@ -1,4 +1,4 @@
-import AVFAudio
+@preconcurrency import AVFAudio
 
 /// A consumer of the single microphone source's raw buffers.
 protocol AudioCaptureObserver: AnyObject {

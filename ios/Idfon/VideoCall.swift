@@ -509,8 +509,8 @@ final class VideoCall: NSObject {
                 try await client.sendText(
                     to: pending.peer,
                     LiveInvite.build(
-                        action: "start", ticket: own, call: true, isReturn: true,
-                        addr: await ffiString { media_live_endpoint_addr() }),
+                        action: "start", ticket: own, call: true,
+                        addr: await ffiString { media_live_endpoint_addr() }, isReturn: true),
                     fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
@@ -660,7 +660,7 @@ final class VideoCall: NSObject {
             // though the audio stop drops the app's suspension exemption.
             let client = self.client
             AppBackgroundTask.run {
-                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: true), fanout: true)
+                _ = try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: true), fanout: true)
             }
         case .join(let ticket, let answersDial):
             Task { await self.join(ticket: ticket, answered: answersDial) }
