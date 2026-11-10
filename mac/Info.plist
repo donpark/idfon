@@ -26,6 +26,16 @@
         </dict>
     </array>
     <key>NSMicrophoneUsageDescription</key><string>Idfon uses the microphone for calls and voice messages.</string>
+    <!-- Edge traffic is plain HTTP on the LAN (self-hosted edges, the E2E
+         rig). Without these keys macOS silently drops local-network
+         URLSession traffic (the POST dies client-side as "The network
+         connection was lost" before it leaves the process). Mirror of
+         ios/Idfon/Info.plist. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key><true/>
+    </dict>
+    <key>NSLocalNetworkUsageDescription</key><string>Idfon connects to a self-hosted edge on your local network.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Idfon uses on-device speech recognition to transcribe your voice.</string>
     <key>CFBundleURLTypes</key>
     <array>

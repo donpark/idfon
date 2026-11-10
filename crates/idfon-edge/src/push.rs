@@ -760,6 +760,24 @@ mod tests {
     }
 
     #[test]
+    fn jwt_signing_has_a_crypto_provider() {
+        // Regression 2026-11-10: with no crypto feature enabled, jsonwebtoken
+        // 11 panics at request time ("Could not automatically determine the
+        // process-level CryptoProvider") — every ring/cancel died mid-request
+        // while register kept working. Throwaway P-256 key, test-only.
+        let pem = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgZgYML+FLO4dLJSTQ\nye5a8jXgbgPkfbx7+dee1As/po6hRANCAASRY301eE6MRlKInb210n/Y8hDOvVoi\nXoaF6Ro+7sHLXL/7UOCGPDjRE8wNfXls8iOy82YaEigXHgfRKy6qyCl6\n-----END PRIVATE KEY-----";
+        let key = jsonwebtoken::EncodingKey::from_ec_pem(pem.as_bytes()).expect("test key parses");
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some("TESTKEY000".to_owned());
+        jsonwebtoken::encode(
+            &header,
+            &serde_json::json!({"iss": "test", "iat": 1}),
+            &key,
+        )
+        .expect("JWT signing must have a crypto provider");
+    }
+
+    #[test]
     fn pending_offer_survives_for_pull_and_dies_with_the_cancel() {
         let key = generate_identity();
         let account = idfon_core::peer_id(&key);
