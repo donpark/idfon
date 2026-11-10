@@ -781,6 +781,11 @@ pub fn media_live_endpoint_addr() -> char_p::Box {
         .as_ref()
         .and_then(|session| serde_json::to_string(&session.live.endpoint().addr()).ok())
         .unwrap_or_default();
+    if !json.is_empty() {
+        // Logged so device traces show whether the addr carried a Relay
+        // entry (the reachability floor when direct addresses are stale).
+        tracing::info!(target: "idfon.media", addr = %json, "live endpoint addr");
+    }
     json.try_into().unwrap()
 }
 #[ffi_export]
@@ -2184,6 +2189,38 @@ mod tests {
         super::set_sub_state(super::SUB_IDLE);
         assert_eq!(super::media_live_state(), 0);
         *super::PATH_CHANGED_AT.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn merge_known_addrs_needs_a_matching_endpoint_id() {
+        // C20: only the publisher's own live addresses may fill a ticket.
+        // The contact's stored (daemon-endpoint) addresses never match a
+        // per-call live endpoint and must be ignored, not merged.
+        let zero = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 32 zero bytes
+        let mut ticket = super::LiveTicket::deserialize(&format!("iroh-live:{zero}/t")).expect("ticket");
+        let id = "0000000000000000000000000000000000000000000000000000000000000000";
+        let own = format!(
+            r#"{{"id":"{id}","addrs":[{{"Ip":"127.0.0.1:1"}}]}}"#
+        );
+        let other = own.replace(id, "1111111111111111111111111111111111111111111111111111111111111111");
+
+        // Matching id + empty ticket addrs → merged.
+        super::merge_known_addrs(&mut ticket, &own);
+        assert!(!ticket.endpoint.addrs.is_empty(), "own addresses merge in");
+
+        // Mismatched id (the daemon endpoint's stored addrs) → untouched.
+        let mut fresh = super::LiveTicket::deserialize(&format!("iroh-live:{zero}/t")).expect("ticket");
+        super::merge_known_addrs(&mut fresh, &other);
+        assert!(fresh.endpoint.addrs.is_empty(), "foreign addresses are ignored");
+        super::merge_known_addrs(&mut fresh, "not json");
+        assert!(fresh.endpoint.addrs.is_empty(), "garbage is ignored");
+
+        // A ticket that already carries addresses keeps them.
+        let mut filled = super::LiveTicket::deserialize(&format!("iroh-live:{zero}/t")).expect("ticket");
+        filled.endpoint = serde_json::from_str(&own).expect("addr");
+        let before = filled.endpoint.addrs.clone();
+        super::merge_known_addrs(&mut filled, &own);
+        assert_eq!(filled.endpoint.addrs, before, "existing addresses are kept");
     }
 
     #[test]

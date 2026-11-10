@@ -52,57 +52,6 @@ protocol CallStateObserver: AnyObject {
     func callStateDidChange()
 }
 
-/// Parsed IDFON-LIVE/1 invite envelope (native/src/core.ts parseLiveInvite).
-/// Shape: "IDFON-LIVE/1\naction=start\nmedia=video-call\nticket=<ticket>"
-struct LiveInvite {
-    let isStart: Bool
-    let isStop: Bool
-    /// media line value: nil = audio, "video" = one-way file share,
-    /// "video-call" = live camera call.
-    let media: String?
-    /// The peer's answer to our dial (wire: `return=1`; Swift return legs do
-    /// not set it, so acceptance never depends on it).
-    let isReturn: Bool
-    let ticket: String
-    /// The publisher's live `EndpointAddr` JSON (base64 on the wire, C20):
-    /// the subscriber merges it into the ticket so the dial does not race
-    /// pkarr/DNS at call-setup time. Absent from old peers → discovery.
-    let addr: String?
-
-    static func parse(_ text: String) -> LiveInvite? {
-        guard text.hasPrefix("IDFON-LIVE/1\n") else { return nil }
-        let body = text.dropFirst("IDFON-LIVE/1\n".count)
-        guard body.hasPrefix("action=") else { return nil }
-        var fields: [String: String] = [:]
-        var lastKey: String?
-        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
-            if let eq = line.firstIndex(of: "=") {
-                lastKey = String(line[..<eq])
-                fields[lastKey!] = String(line[line.index(after: eq)...])
-            } else if let key = lastKey, !line.isEmpty {
-                fields[key]? += "\n" + line
-            }
-        }
-        guard let action = fields["action"] else { return nil }
-        return LiveInvite(
-            isStart: action == "start",
-            isStop: action == "stop",
-            media: fields["media"],
-            isReturn: fields["return"] == "1",
-            ticket: fields["ticket"] ?? "",
-            addr: fields["addr"]
-                .flatMap { Data(base64Encoded: $0) }
-                .flatMap { String(data: $0, encoding: .utf8) }
-        )
-    }
-
-    static func build(action: String, ticket: String, call: Bool, addr: String = "") -> String {
-        let media = call ? "video-call" : "video"
-        let addrLine = addr.isEmpty ? "" : "\naddr=\(Data(addr.utf8).base64EncodedString())"
-        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(addrLine)"
-    }
-}
-
 /// The envelope `addr=` line: this session's live dial address (C20 — a live
 /// ticket is endpoint-id-only and a fresh endpoint's pkarr record is not
 /// resolvable yet at call-setup time, so id-only dials race discovery).
