@@ -164,7 +164,7 @@ apps already hold.
 
 | Route | Body | Auth |
 | --- | --- | --- |
-| `POST /_push/register` / `unregister` | `{voip_token, topic?}` | a capability ticket **issued by the ref** — the app self-issues one through the daemon's existing `capability.ticket` RPC, so only the identity's holder can claim its wake channel |
+| `POST /_push/register` / `unregister` | `{voip_token, topic?, env?}` | a capability ticket **issued by the ref** — the app self-issues one through the daemon's existing `capability.ticket` RPC, so only the identity's holder can claim its wake channel |
 | `POST /_push/ring` | `{call_uuid, caller_id, has_video, invite?}` | a capability ticket **issued by the ref** (the caller's contact ticket — being a contact is the right to ring) **or by the caller** (a self-issued statement: identified + rate-limited, so a plain paired peer can ring before a contact ticket exists). A subject-bound ticket must match `caller_id` |
 | `POST /_push/cancel` | `{call_uuid}` | same as ring |
 | `POST /_push/pull` | `{call_uuid}` | a capability ticket **issued by the ref** (the callee self-issues) |
@@ -193,9 +193,15 @@ why registration stores `token → topic` and fan-out varies the topic per token
 One team-level `.p8` auth key signs for **all** apps — no second key when the
 mac joins (P3). The one leak is the APNs *environment*: dev-signed builds
 deliver only via `api.sandbox.push.apple.com`, TestFlight/App Store builds only
-via production. The sender learns it per token (landed 2026-10-24): try the
-configured host, flip to the counterpart on `BadEnvironmentKeyInToken`,
-remember the verdict — one edge serves mixed dev/TestFlight fleets.
+via production. Since 2026-11-10 the app **declares** it at registration
+(`env: "sandbox"|"production"`, read from its own embedded provisioning
+profile: `development` → sandbox, no embedded profile → production), and the
+edge stores it per token and pushes there first. Absent `env` (an older app)
+the sender learns it (landed 2026-10-24): try the configured host, flip to the
+counterpart on `BadEnvironmentKeyInToken`/`BadDeviceToken`, remember the
+verdict. Either shape serves mixed dev/TestFlight fleets; the declaration only
+removes the one refused send per token after an edge restart, and it survives a
+reinstall that changes the entitlement.
 
 **Names and the call log (decided 2026-10-17, donpark/idfon#48).** The system
 call UI shows real peer display names, which land in the system call log
