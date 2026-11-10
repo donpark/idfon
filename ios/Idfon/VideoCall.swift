@@ -449,6 +449,10 @@ final class VideoCall: NSObject {
         videoEnabled = cameraOn
         if case .incoming(let pending) = life.phase { callPeer = pending.peer }
         apply(.answer)
+        // Quick answer signal (C23): tell the caller NOW — before the media
+        // publish — so its "Calling" UI ends immediately; the return invite
+        // follows with the media ticket and joins the leg.
+        Task { try? await client.sendText(to: pending.peer, "call_started", fanout: true) }
         let epoch = life.epoch
         Task {
             do {
@@ -551,7 +555,11 @@ final class VideoCall: NSObject {
     private var ticketAddrs: [String: String] = [:]
 
     func handleEnvelope(peer peerID: String, _ text: String) {
-        if text == "call_started" { return } // informational only
+        if text == "call_started" {
+            // The callee's quick answer signal (C23): clear "Calling" now.
+            apply(.remoteAnswered(peer: peerID))
+            return
+        }
         if text == "call_stopped" {
             apply(.remoteStop(peer: peerID, ticket: nil))
             return

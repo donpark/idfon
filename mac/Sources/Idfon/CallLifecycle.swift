@@ -85,6 +85,10 @@ struct CallLifecycle {
     /// stops carry it, so correlation cannot drift mid-call (a re-publish used
     /// to swap it and the peer's hang-up then named an "older" call).
     private(set) var generation: String?
+    /// The peer accepted our dial at their end (the quick `call_started`
+    /// signal, C23): the UI flips to connected before their return invite
+    /// (and media) arrive. Consumed by the next join so its cue still fires.
+    private(set) var remoteAnswered = false
     /// Bumped whenever in-flight work is invalidated; async flows capture it
     /// and re-check it after every await.
     private(set) var epoch: Int = 0
@@ -141,6 +145,16 @@ struct CallLifecycle {
 
         case .invite(let invite):
             return accept(invite)
+
+        case .remoteAnswered(let from):
+            // The quick answer signal: end the "Calling" UI at once. The
+            // return invite joins the media later (accept() in .connected).
+            guard case .dialing(let peer) = phase, peer == from else {
+                return [.log("answer signal ignored: not dialing \(from)")]
+            }
+            remoteAnswered = true
+            phase = .connected(peer: peer)
+            return [.changed]
 
         case .answer:
             guard case .incoming(let invite) = phase else {
@@ -203,6 +217,7 @@ struct CallLifecycle {
     private mutating func begin(_ newPhase: Phase, generation newGeneration: String?) {
         phase = newPhase
         generation = newGeneration
+        remoteAnswered = false
         epoch += 1
     }
 
@@ -215,6 +230,7 @@ struct CallLifecycle {
         let ticket = generation
         phase = .idle
         generation = nil
+        remoteAnswered = false
         epoch += 1
         var effects: [Effect] = []
         if tellPeer, let peer {
@@ -245,7 +261,10 @@ struct CallLifecycle {
                 answersDial = true
                 phase = .connected(peer: peer)
             } else {
-                answersDial = false
+                // The return leg after the quick `call_started` signal (C23):
+                // still the answer to our dial — its cue fires once here.
+                answersDial = remoteAnswered
+                remoteAnswered = false
             }
             return [.join(ticket: invite.ticket, answersDial: answersDial), .changed]
 
@@ -288,6 +307,10 @@ extension CallLifecycle {
         case invite(Invite)
         /// The user answers the incoming invite.
         case answer
+        /// The peer accepted our dial at their end (`call_started`, C23):
+        /// flip to connected now; the media leg joins when their return
+        /// invite lands.
+        case remoteAnswered(peer: String)
         /// The user ends the call (hang up, decline, cancel).
         case hangUp
         /// The peer ended the call (stop envelope or bare `call_stopped`);

@@ -531,6 +531,10 @@ final class LiveCall {
         operation?.cancel()
         if case .incoming(let pending) = life.phase { callPeer = pending.peer }
         apply(.answer)
+        // Quick answer signal (C23): tell the caller NOW — before the media
+        // publish — so its "Calling" UI ends immediately; the return invite
+        // follows with the media ticket and joins the leg.
+        Task { try? await client.sendText(to: pending.peer, "call_started", fanout: true) }
         let epoch = life.epoch
         audioEnabled = audioAvailable
         CallTonePlayer.shared.stop()
@@ -639,6 +643,10 @@ final class LiveCall {
     private var ticketAddrs: [String: String] = [:]
 
     func handleEnvelope(peer peerID: String, _ text: String) {
+        if text == "call_started" {
+            apply(.remoteAnswered(peer: peerID))
+            return
+        }
         guard let invite = LiveInvite.parse(text) else {
             idfonLog("idfon live call: unparsed envelope from \(peerID)")
             return

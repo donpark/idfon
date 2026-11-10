@@ -185,4 +185,32 @@ do {
     check(end.contains(.sendStop(peer: "caller", ticket: "T2")), "decline names the newest invite")
 }
 
+
+// C23: the quick answer signal (`call_started`) flips dialing -> connected at
+// once, and the return invite still carries the answer cue exactly once.
+do {
+    var life = CallLifecycle()
+    _ = effects(&life, .dial(peer: "peer"))
+    _ = effects(&life, .published(ticket: "T1"))
+    let fx = effects(&life, .remoteAnswered(peer: "peer"))
+    check(life.phase == .connected(peer: "peer"), "quick answer signal connects at once")
+    check(fx.contains(.changed), "the UI refreshes on the quick signal")
+    let leg = effects(&life, .invite(.init(peer: "peer", ticket: "T2", isReturn: true, watchOnly: false)))
+    check(leg.contains(.join(ticket: "T2", answersDial: true)), "the return leg still cues the answer")
+    let republish = effects(&life, .invite(.init(peer: "peer", ticket: "T3", isReturn: false, watchOnly: false)))
+    check(republish.contains(.join(ticket: "T3", answersDial: false)), "a re-publish joins without a second cue")
+}
+
+// C23: a stray answer signal changes nothing outside an outgoing dial.
+do {
+    var life = CallLifecycle()
+    _ = effects(&life, .remoteAnswered(peer: "peer"))
+    check(life.phase == .idle, "a stray answer signal leaves idle alone")
+    var ringing = CallLifecycle()
+    _ = effects(&ringing, .invite(.init(peer: "peer", ticket: "T1", isReturn: false, watchOnly: false)))
+    _ = effects(&ringing, .remoteAnswered(peer: "other"))
+    check({ if case .incoming = ringing.phase { return true }; return false }(),
+          "an answer signal does not disturb a ringing call")
+}
+
 print("ALL OK")
