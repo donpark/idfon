@@ -25,6 +25,13 @@ add or materially change a doc, update the index.
 
 - Rebuild scope: `docs/build.md` maps a change to the subprojects that must be
   rebuilt. When you change something shared, say which subprojects to rebuild.
+- **Debugging calls/wakes/push: ask, don't grep.** Before any device-log
+  archaeology (`devicectl` pulls, sysdiagnose, timestamp reconstruction), query
+  the diagnostics the apps already report: `wake.trace` (one call's timeline:
+  registration → ring → push → report → answer → media) and `diag.tail` via
+  `idfon-mcp`; raw views at `<data-dir>/diag/`; edge health at `/_push/health`.
+  See `docs/mcp-control.md` + `docs/diag.md`. (2026-11-10: hours were lost
+  reconstructing from USB logs what the app was already reporting.)
 - Rust: `cargo test -p <crate>` and `cargo check --workspace --all-targets`.
 - macOS app: `swift build` in `mac/`.
 - iOS: source files can be syntax-checked with `swiftc -parse <file>`; a full
