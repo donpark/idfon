@@ -30,4 +30,6 @@ let weird = LiveInvite.parse("IDFON-LIVE/1\naction=start\nticket=a=b=c")
 check(weird?.ticket == "a=b=c", "values containing '=' survive")
 check(LiveInvite.parse("hello") == nil, "non-envelope text is ignored")
 
+check(LiveInvite.parse(LiveInvite.build(action: "start", ticket: "t", call: true, isReturn: true))?.isReturn == true, "return=1 round-trips (the glare marker)")
+
 print("ALL OK")

@@ -587,7 +587,7 @@ final class LiveCall {
                 let addrLine = await liveAddrLine()
                 try await client.sendText(
                     to: pending.peer,
-                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)",
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)\nreturn=1",
                     fanout: true
                 )
                 // Informational parity with core.ts's video answer branch.

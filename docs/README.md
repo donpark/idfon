@@ -29,6 +29,7 @@ kept because it records decisions; **design** = not all implemented.
 | `edge-deploy-checklist.md` | the CallKit test rig (local edge + app config), session teardown (`scripts/e2e-teardown.sh`), droplet deploy incl. the APNs push wiring (#54) |
 | `callkit-integration.md` | iOS CallKit/PushKit lifecycle; per-contact in-app vs system-call routing, invite/push deduplication, APNs wake diagnostics, and deferred macOS LiveCommunicationKit |
 | `callkit-brittleness.md` | Living CallKit/PushKit regression ledger (confirmed causes, open investigations, fixes/commits), two-phone no-ring evidence, failure seams, ranked architecture options, oracle-verified platform semantics (VoIP reporting penalties, APNs environment/tokens) and the handles/rendezvous verdict over rotating endpoint ids |
+| `mcp-control.md` | MCP control-surface access model: three approval tiers over iroh/capability tickets, the request-time approval block (lock-screen actionable variant), verb-class scoping, audit-over-Diag; initial read-only tool slice |
 | `contact-exchange.md` | vCard contact cards: the NameDrop substitute, `idfon://add/` deep links, QR, import/export surfaces, the approval modal (rename/deny, admission-code auth), the test-contacts page (`scripts/test-contacts-page.mjs`) |
 | `live-activity-bar-layout.md` | live-call bar UIKit layout |
 | `ios-ui-design.md` | structural UX design for the iOS app (tabs, rows, chat timeline, sessions, identity) — design, for implementation |

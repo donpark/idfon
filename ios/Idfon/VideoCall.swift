@@ -509,7 +509,7 @@ final class VideoCall: NSObject {
                 try await client.sendText(
                     to: pending.peer,
                     LiveInvite.build(
-                        action: "start", ticket: own, call: true,
+                        action: "start", ticket: own, call: true, isReturn: true,
                         addr: await ffiString { media_live_endpoint_addr() }),
                     fanout: true)
             } catch {

@@ -48,4 +48,6 @@ check(LiveInvite.parse("IDFON-LIVE/1\nno-action-line") == nil, "missing action i
 // Determinism: parsing the built form twice is stable.
 check(LiveInvite.parse(built)?.addr == parsed.addr, "parse is stable")
 
+check(LiveInvite.parse(LiveInvite.build(action: "start", ticket: "t", call: true, isReturn: true))?.isReturn == true, "return=1 round-trips (the glare marker)")
+
 print("ALL OK")

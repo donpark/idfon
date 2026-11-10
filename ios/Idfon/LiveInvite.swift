@@ -55,11 +55,12 @@ struct LiveInvite {
 
     static func build(
         action: String, ticket: String, call: Bool, callMode: IncomingCallMode = .bar,
-        addr: String = ""
+        addr: String = "", isReturn: Bool = false
     ) -> String {
         let media = call ? "video-call" : "video"
         let mode = action == "start" && callMode.usesCallKit ? "\ncall_mode=call_kit" : ""
         let addrLine = addr.isEmpty ? "" : "\naddr=\(Data(addr.utf8).base64EncodedString())"
-        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(addrLine)\(mode)"
+        let returnLine = isReturn ? "\nreturn=1" : ""
+        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(addrLine)\(returnLine)\(mode)"
     }
 }

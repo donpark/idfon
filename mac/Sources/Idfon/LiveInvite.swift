@@ -47,9 +47,10 @@ struct LiveInvite {
         )
     }
 
-    static func build(action: String, ticket: String, call: Bool, addr: String = "") -> String {
+    static func build(action: String, ticket: String, call: Bool, addr: String = "", isReturn: Bool = false) -> String {
         let media = call ? "video-call" : "video"
         let addrLine = addr.isEmpty ? "" : "\naddr=\(Data(addr.utf8).base64EncodedString())"
-        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(addrLine)"
+        let returnLine = isReturn ? "\nreturn=1" : ""
+        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(addrLine)\(returnLine)"
     }
 }

@@ -263,7 +263,7 @@ final class LiveCall {
                 let addrLine = await liveAddrLine()
                 try await client.sendText(
                     to: pending.peer,
-                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)",
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)\nreturn=1",
                     fanout: true
                 )
                 // Informational parity with core.ts's video answer branch.
@@ -1014,7 +1014,7 @@ final class VideoCall {
                     to: pending.peer,
                     LiveInvite.build(
                         action: "start", ticket: own, call: true,
-                        addr: await ffiString { media_live_endpoint_addr() }),
+                        addr: await ffiString { media_live_endpoint_addr() }, isReturn: true),
                     fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")

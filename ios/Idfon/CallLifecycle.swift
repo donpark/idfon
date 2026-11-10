@@ -253,6 +253,26 @@ struct CallLifecycle {
             guard invite.peer == peer else {
                 return [.log("ignored invite from \(invite.peer): call is with \(peer)")]
             }
+            // Glare (C21): a fresh call from the very peer we are dialing.
+            // Both sides compute the same winner — the lower generation
+            // ticket — so exactly one call survives: the loser drops its dial
+            // and rings the winner's call; the winner declines the incoming
+            // and keeps dialing. A return leg carries `return=1` (both trees
+            // set it); a peer that does not reads as a fresh call.
+            if case .dialing = phase, !invite.isReturn, !invite.watchOnly {
+                let ours = generation ?? ""
+                if !ours.isEmpty && ours < invite.ticket {
+                    return [
+                        .sendStop(peer: invite.peer, ticket: invite.ticket),
+                        .log("glare: ours (\(ours)) wins; declined \(invite.peer)'s \(invite.ticket)"),
+                    ]
+                }
+                var effects = end(tellPeer: true)
+                begin(.incoming(invite), generation: invite.ticket)
+                effects.append(.ring(peer: invite.peer))
+                effects.append(.changed)
+                return effects
+            }
             // A leg on our call: the peer's answer to our dial (return leg or
             // their `call_started`-era invite) or a fresh ticket after their
             // re-publish. Join it; a dialing call is now on.
