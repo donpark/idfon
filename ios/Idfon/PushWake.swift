@@ -86,7 +86,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     /// queued. `callUUID` must be `CallUUID.from(ticket)` of the invite, so the
     /// callee's push report and the envelope land on the same system call.
     @MainActor
-    func ring(peer: String, callUUID: String, hasVideo: Bool) {
+    func ring(peer: String, callUUID: String, hasVideo: Bool, invite: String = "") {
         guard IncomingCallRouter.shared.mode(for: peer).usesCallKit else {
             idfonLog("idfon push: skipped ring for in-app-only channel peer=\(peer)")
             return
@@ -97,7 +97,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         }
         idfonLog("idfon push: ring peer=\(peer) call=\(callUUID)")
         pendingRing = (peer, callUUID)
-        send(peer: peer, action: "ring", callUUID: callUUID, hasVideo: hasVideo)
+        send(peer: peer, action: "ring", callUUID: callUUID, hasVideo: hasVideo, invite: invite)
     }
 
     /// Retract the unanswered ring (caller hung up before answer).
@@ -113,7 +113,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     /// ring-over (`cancelFromPush` leaves answered calls alone).
     func callConnected() { cancelRing() }
 
-    private func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
+    private func send(peer: String, action: String, callUUID: String, hasVideo: Bool, invite: String = "") {
         // Background-tasked: the ring-cancel runs at connect time, which on a
         // lock-screen wake happens in the background — the POST must land or
         // the identity's other devices keep ringing (#46).
@@ -131,7 +131,12 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                 issued: try? await self.selfIssuedStatement())
             else { return }
             var body: [String: Any] = ["call_uuid": callUUID, "caller_id": ticket.callerId]
-            if action == "ring" { body["has_video"] = hasVideo }
+            if action == "ring" {
+                body["has_video"] = hasVideo
+                // The invite rides along so a push-woken callee can pull it
+                // when the iroh envelope has not landed (P1 rendezvous).
+                if !invite.isEmpty { body["invite"] = invite }
+            }
             let url = EdgeClient.resourceURL(baseURL: base, account: peer, path: "/_push/\(action)")
             await self.postJSON(url: url, ticket: ticket.raw, body: body)
         }
@@ -140,6 +145,38 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     /// The stored contact ticket (the callee's statement about us), if any.
     private func contactTicket(for peer: String) -> RingTicket? {
         CapabilityTickets.rawTicket(for: peer).flatMap { RingTicket(json: $0) }
+    }
+
+    /// The push-first wake path: fetch the invite the caller stored at the
+    /// edge (`/_push/pull`) when the iroh envelope has not landed yet, and
+    /// route it through the ordinary envelope path — the machines and the
+    /// CallKit UUID dedupe then see one call. Only routed while the call is
+    /// still expected here: a quick cancel must not resurrect it.
+    private func pullOffer(callUUID: String, callerId: String) {
+        AppBackgroundTask.run {
+            guard let base = EdgeClient.shared.baseURL else { return }
+            guard let statement = try? await self.selfIssuedStatement() else { return }
+            for account in await self.accountRefs(issuer: statement.issuer) {
+                let url = EdgeClient.resourceURL(
+                    baseURL: base, account: account, path: "/_push/pull")
+                guard let value = await self.postJSONValue(
+                    url: url, ticket: statement.raw, body: ["call_uuid": callUUID]),
+                    let invite = value["invite"] as? String, !invite.isEmpty
+                else { continue }
+                let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
+                let caller = (value["caller_id"] as? String).map { $0.isEmpty ? callerId : $0 }
+                    ?? callerId
+                await MainActor.run {
+                    guard CallKitController.shared.stillExpects(uuid: uuid) else {
+                        idfonLog("idfon push: pulled invite is for a call no longer ringing; dropped")
+                        return
+                    }
+                    idfonLog("idfon push: pulled invite for call=\(callUUID); routing")
+                    IncomingCallRouter.shared.route(peerId: caller, envelope: invite)
+                }
+                return
+            }
+        }
     }
 
     // MARK: - Registration
@@ -268,7 +305,8 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     callUUID: callUUID,
                     callerId: dict["caller_id"] as? String ?? "",
                     hasVideo: (dict["has_video"] as? Bool) ?? false,
-                    endImmediately: true)
+                    endImmediately: true,
+                    mustReport: mustReport)
                 Diag.log("wake", ["call": callUUID, "outcome": "reported_ended"])
             } else {
                 Diag.log("wake", ["call": callUUID, "outcome": "canceled"])
@@ -288,12 +326,16 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                 Diag.log("wake", ["call": callUUID, "outcome": "bar_owns"])
             } else if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
                 CallKitController.shared.presentIncoming(
-                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo,
+                    mustReport: mustReport)
                 Diag.log("wake", ["call": callUUID, "outcome": "system_ring"])
+                pullOffer(callUUID: callUUID, callerId: callerId)
             } else if mustReport {
                 CallKitController.shared.presentIncoming(
-                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    callUUID: callUUID, callerId: callerId, hasVideo: hasVideo,
+                    mustReport: mustReport)
                 Diag.log("wake", ["call": callUUID, "outcome": "reported_ring"])
+                pullOffer(callUUID: callUUID, callerId: callerId)
             } else {
                 idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
                 Diag.log("wake", ["call": callUUID, "outcome": "bar_mode"])
@@ -361,7 +403,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     @discardableResult
     private func postJSON(url: URL, ticket: String, body: [String: Any]) async -> Bool {
-        guard !ticket.isEmpty else { return false }
+        await postJSONValue(url: url, ticket: ticket, body: body) != nil
+    }
+
+    /// The response object on 2xx (nil otherwise): `pull` reads its body.
+    private func postJSONValue(
+        url: URL, ticket: String, body: [String: Any]
+    ) async -> [String: Any]? {
+        guard !ticket.isEmpty else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(ticket, forHTTPHeaderField: "x-idfon-ticket")
@@ -372,18 +421,18 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             // `rung` is the only evidence the ring reached a device: 0 means
             // the peer has no registered token (the edge still answers 200).
-            let rung = (try? JSONSerialization.jsonObject(with: data))
-                .flatMap { ($0 as? [String: Any])?["rung"] as? Int }
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let rung = object?["rung"] as? Int
             if let rung {
                 Diag.log("push.ring", ["rung": rung, "status": status])
                 idfonLog("idfon push: \(url.lastPathComponent) → \(status) rung=\(rung)")
             } else {
                 idfonLog("idfon push: \(url.lastPathComponent) → \(status)")
             }
-            return (200..<300).contains(status)
+            return (200..<300).contains(status) ? object : nil
         } catch {
             idfonLog("idfon push: \(url.lastPathComponent) failed: \(error.localizedDescription)")
-            return false
+            return nil
         }
     }
 }

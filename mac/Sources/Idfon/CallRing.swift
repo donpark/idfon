@@ -21,7 +21,7 @@ enum CallRing {
     /// Every call ring-pushes per platform design: iOS callees get the system
     /// call UI (and the wake when terminated); macOS callees register no VoIP
     /// token and simply ring in their app's Bar.
-    static func ring(peer ref: String, inviteTicket: String, hasVideo: Bool) async {
+    static func ring(peer ref: String, inviteTicket: String, hasVideo: Bool, invite: String = "") async {
         guard EdgeClient.shared.baseURL != nil else {
             idfonLog("idfon ring: no edge configured; skipping")
             return
@@ -33,7 +33,7 @@ enum CallRing {
         let callUUID = CallUUID.from(ticket: inviteTicket).uuidString
         idfonLog("idfon ring: peer=\(id) call=\(callUUID)")
         pendingRing = (id, callUUID)
-        send(peer: id, action: "ring", callUUID: callUUID, hasVideo: hasVideo)
+        send(peer: id, action: "ring", callUUID: callUUID, hasVideo: hasVideo, invite: invite)
     }
 
     /// Retract the unanswered ring (caller hung up before answer).
@@ -61,7 +61,7 @@ enum CallRing {
         return id
     }
 
-    private static func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
+    private static func send(peer: String, action: String, callUUID: String, hasVideo: Bool, invite: String = "") {
         Task {
             guard let base = EdgeClient.shared.baseURL else { return }
             // `caller_id` derives from the presented ticket (RingTicket): a
@@ -75,7 +75,12 @@ enum CallRing {
                 issued: try? await selfIssuedStatement())
             else { return }
             var body: [String: Any] = ["call_uuid": callUUID, "caller_id": ticket.callerId]
-            if action == "ring" { body["has_video"] = hasVideo }
+            if action == "ring" {
+                body["has_video"] = hasVideo
+                // The invite rides along so a push-woken callee can pull it
+                // when the iroh envelope has not landed (P1 rendezvous).
+                if !invite.isEmpty { body["invite"] = invite }
+            }
             let url = EdgeClient.resourceURL(baseURL: base, account: peer, path: "/_push/\(action)")
             await postJSON(url: url, ticket: ticket.raw, body: body)
         }

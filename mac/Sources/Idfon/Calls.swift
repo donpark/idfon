@@ -52,47 +52,16 @@ protocol CallStateObserver: AnyObject {
     func callStateDidChange()
 }
 
-/// Parsed IDFON-LIVE/1 invite envelope (native/src/core.ts parseLiveInvite).
-/// Shape: "IDFON-LIVE/1\naction=start\nmedia=video-call\nticket=<ticket>"
-struct LiveInvite {
-    let isStart: Bool
-    let isStop: Bool
-    /// media line value: nil = audio, "video" = one-way file share,
-    /// "video-call" = live camera call.
-    let media: String?
-    /// The peer's answer to our dial (wire: `return=1`; Swift return legs do
-    /// not set it, so acceptance never depends on it).
-    let isReturn: Bool
-    let ticket: String
-
-    static func parse(_ text: String) -> LiveInvite? {
-        guard text.hasPrefix("IDFON-LIVE/1\n") else { return nil }
-        let body = text.dropFirst("IDFON-LIVE/1\n".count)
-        guard body.hasPrefix("action=") else { return nil }
-        var fields: [String: String] = [:]
-        var lastKey: String?
-        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
-            if let eq = line.firstIndex(of: "=") {
-                lastKey = String(line[..<eq])
-                fields[lastKey!] = String(line[line.index(after: eq)...])
-            } else if let key = lastKey, !line.isEmpty {
-                fields[key]? += "\n" + line
-            }
-        }
-        guard let action = fields["action"] else { return nil }
-        return LiveInvite(
-            isStart: action == "start",
-            isStop: action == "stop",
-            media: fields["media"],
-            isReturn: fields["return"] == "1",
-            ticket: fields["ticket"] ?? ""
-        )
-    }
-
-    static func build(action: String, ticket: String, call: Bool) -> String {
-        let media = call ? "video-call" : "video"
-        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)"
-    }
+/// The envelope `addr=` line: this session's live dial address (C20 — a live
+/// ticket is endpoint-id-only and a fresh endpoint's pkarr record is not
+/// resolvable yet at call-setup time, so id-only dials race discovery).
+func liveAddrLine() async -> String {
+    await Task.detached(priority: .userInitiated) {
+        guard let ptr = media_live_endpoint_addr() else { return "" }
+        defer { rust_free_string(ptr) }
+        let addr = String(cString: ptr)
+        return addr.isEmpty ? "" : "\naddr=\(Data(addr.utf8).base64EncodedString())"
+    }.value
 }
 
 /// Live audio-call state machine: the caller publishes their microphone
@@ -233,14 +202,16 @@ final class LiveCall {
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
-                try await client.sendText(
-                    to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
-                )
+                let addrLine = await liveAddrLine()
+                let invite = "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
+                try await client.sendText(to: peerId, invite, fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
                 // invite ticket's, so push and envelope share one system call.
-                await CallRing.ring(peer: peerId, inviteTicket: ticket, hasVideo: false)
+                // The invite rides the ring so a woken callee can pull it if
+                // iroh delivery lags.
+                await CallRing.ring(
+                    peer: peerId, inviteTicket: ticket, hasVideo: false, invite: invite)
             } catch {
                 let ns = error as NSError
                 fail("Dial failed: \(error.localizedDescription) [\(ns.domain) code=\(ns.code)]")
@@ -259,6 +230,10 @@ final class LiveCall {
         audioEnabled = true
         operation?.cancel()
         apply(.answer)
+        // Quick answer signal (C23): tell the caller NOW — before the media
+        // publish — so its "Calling" UI ends immediately; the return invite
+        // follows with the media ticket and joins the leg.
+        Task { try? await client.sendText(to: pending.peer, "call_started", fanout: true) }
         let epoch = life.epoch
         CallTonePlayer.shared.stop()
         operation = Task {
@@ -285,12 +260,14 @@ final class LiveCall {
                 }
                 published = true
                 applySendState()
+                let addrLine = await liveAddrLine()
                 try await client.sendText(
                     to: pending.peer,
-                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)\nreturn=1",
+                    fanout: true
                 )
                 // Informational parity with core.ts's video answer branch.
-                try await client.sendText(to: pending.peer, "call_started")
+                try await client.sendText(to: pending.peer, "call_started", fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -322,8 +299,19 @@ final class LiveCall {
     /// Handles an IDFON-LIVE/1 envelope. Consumes audio invites/stops;
     /// video envelopes are ignored here (VideoCall owns them) — but a stop
     /// ends our call too since the GUI sends one envelope for both.
+    /// Live `addr=` lines by ticket (C20): the publisher's own dial address,
+    /// preferred over the contact's stored (daemon-endpoint) addresses.
+    private var ticketAddrs: [String: String] = [:]
+
     func handleEnvelope(peer peerID: String, _ text: String) {
+        if text == "call_started" {
+            apply(.remoteAnswered(peer: peerID))
+            return
+        }
         guard let invite = LiveInvite.parse(text) else { return }
+        if let addr = invite.addr, !addr.isEmpty, !invite.ticket.isEmpty {
+            ticketAddrs[invite.ticket] = addr
+        }
         if invite.isStop {
             apply(.remoteStop(peer: peerID, ticket: invite.ticket.isEmpty ? nil : invite.ticket))
             return
@@ -408,9 +396,11 @@ final class LiveCall {
         // mono payload is resilience mode, so FEC follows the layout.
         Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
         do {
+            let addrLine = await liveAddrLine()
             try await client.sendText(
                 to: peer,
-                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(addrLine)",
+                fanout: true
             )
             idfonLog("idfon live: re-published mic leg channels=\(channels)")
         } catch {
@@ -453,7 +443,7 @@ final class LiveCall {
             CallFeedback.post("A call is already in progress.")
         case .sendStop(let peer, let ticket):
             if let ticket {
-                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false)) }
+                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false), fanout: true) }
             } else {
                 // The call never got a generation (ended before its publish
                 // landed): legacy bare stop.
@@ -548,7 +538,7 @@ final class LiveCall {
             media_live_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false), fanout: true)
         }
     }
 
@@ -597,7 +587,15 @@ final class LiveCall {
     private func subscribe(ticket: String) async -> Bool {
         // #157: the contact's stored endpoint address rides the dial, so a
         // re-subscribe does not depend on pkarr/DNS during a transition.
-        let addrs = await peerAddrs(activePeer)
+        // C20: the envelope's `addr` (the publisher's live endpoint) wins when
+        // present — the stored addresses belong to the daemon endpoint and a
+        // live ticket's id never matches them.
+        let addrs: String
+        if let cached = ticketAddrs[ticket] {
+            addrs = cached
+        } else {
+            addrs = await peerAddrs(activePeer)
+        }
         return await Task.detached(priority: .userInitiated) { () -> Bool in
             media_live_subscribe_with_addrs(ticket, addrs) == 0
         }.value
@@ -781,7 +779,7 @@ final class VideoCall {
             media_video_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true))
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true), fanout: true)
         }
     }
 
@@ -848,7 +846,12 @@ final class VideoCall {
         // call's original ticket (CallLifecycle.generation).
         applySendState()
         do {
-            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true))
+            try await client.sendText(
+                to: peer,
+                LiveInvite.build(
+                    action: "start", ticket: ticket, call: true,
+                    addr: await ffiString { media_live_endpoint_addr() }),
+                fanout: true)
             idfonLog("idfon video: re-published tracks channels=\(channels)")
         } catch {
             idfonError("idfon video: re-publish invite failed: \(error)")
@@ -947,11 +950,16 @@ final class VideoCall {
                 publishedChannels = AudioMeter.captureChannelsForCall()
                 apply(.published(ticket: ticket))
                 applySendState()
-                try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
+                let invite = LiveInvite.build(
+                    action: "start", ticket: ticket, call: true,
+                    addr: await ffiString { media_live_endpoint_addr() })
+                try await client.sendText(to: id, invite, fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
-                // invite ticket's, so push and envelope share one call).
-                await CallRing.ring(peer: id, inviteTicket: ticket, hasVideo: true)
+                // invite ticket's, so push and envelope share one call). The
+                // invite rides the ring so a woken callee can pull it if iroh
+                // delivery lags.
+                await CallRing.ring(peer: id, inviteTicket: ticket, hasVideo: true, invite: invite)
                 await waitForReturnInvite(peer: id)
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
@@ -973,6 +981,9 @@ final class VideoCall {
         audioEnabled = !watchOnly
         videoEnabled = false
         apply(.answer)
+        // Quick answer signal (C23): tell the caller NOW — before the media
+        // publish — so its "Calling" UI ends immediately.
+        Task { try? await client.sendText(to: pending.peer, "call_started", fanout: true) }
         CallTonePlayer.shared.stop()
         Task {
             do {
@@ -999,7 +1010,12 @@ final class VideoCall {
                 published = true
                 publishedChannels = AudioMeter.captureChannelsForCall()
                 applySendState()
-                try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
+                try await client.sendText(
+                    to: pending.peer,
+                    LiveInvite.build(
+                        action: "start", ticket: own, call: true,
+                        addr: await ffiString { media_live_endpoint_addr() }, isReturn: true),
+                    fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -1026,12 +1042,19 @@ final class VideoCall {
     /// Handles a call-control message from `peerID`. Invite envelopes and
     /// call control texts are consumed (never shown as chat history).
     func handleEnvelope(peer peerID: String, _ text: String) {
-        if text == "call_started" { return } // informational only
+        if text == "call_started" {
+            // The callee's quick answer signal (C23): clear "Calling" now.
+            apply(.remoteAnswered(peer: peerID))
+            return
+        }
         if text == "call_stopped" {
             apply(.remoteStop(peer: peerID, ticket: nil))
             return
         }
         guard let invite = LiveInvite.parse(text) else { return }
+        if let addr = invite.addr, !addr.isEmpty, !invite.ticket.isEmpty {
+            ticketAddrs[invite.ticket] = addr
+        }
         if invite.isStop {
             apply(.remoteStop(peer: peerID, ticket: invite.ticket.isEmpty ? nil : invite.ticket))
             return
@@ -1072,6 +1095,10 @@ final class VideoCall {
 
     /// Subscribes audio/video through Idfon's current media bridge; Swift owns
     /// the call UI and lifecycle while the bridge owns MoQ decode resources.
+    /// Live `addr=` lines by ticket (C20): the publisher's own dial address,
+    /// preferred over the contact's stored (daemon-endpoint) addresses.
+    private var ticketAddrs: [String: String] = [:]
+
     private func join(ticket: String, answered: Bool) async {
         // The return invite arrives through both ChatStore and
         // waitForReturnInvite; the second must not restart the watch.
@@ -1091,7 +1118,12 @@ final class VideoCall {
             return
         }
         if case .watching = life.phase {} else {
-            let addrs = await videoPeerAddrs(activePeer)
+            let addrs: String
+            if let cached = ticketAddrs[ticket] {
+                addrs = cached
+            } else {
+                addrs = await videoPeerAddrs(activePeer)
+            }
             let subscribeResult = await Task.detached(priority: .userInitiated) {
                 media_live_subscribe_with_addrs(ticket, addrs)
             }.value
@@ -1132,7 +1164,7 @@ final class VideoCall {
             CallFeedback.post("A call is already in progress.")
         case .sendStop(let peer, let ticket):
             if let ticket {
-                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true)) }
+                Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true), fanout: true) }
             } else {
                 // The call never got a generation (ended before its publish
                 // landed): legacy bare stop.

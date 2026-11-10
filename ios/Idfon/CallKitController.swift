@@ -83,6 +83,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
         return call.peerId == peerId
     }
 
+    /// Whether a call reported from a push is still live here: the pull path
+    /// (`PushWake.pullOffer`) routes its fetched invite only then, so a quick
+    /// cancel cannot resurrect the call.
+    func stillExpects(uuid: UUID) -> Bool {
+        guard let call = current, !call.outgoing else { return false }
+        return call.uuid == uuid
+    }
+
     /// Reports an incoming call from either the signed invite or PushKit.
     /// Both use the ticket-derived UUID, so whichever arrives second dedupes
     /// onto the same system call. A VoIP push that must be reported calls this
@@ -90,26 +98,55 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// `endImmediately` serves a stale push that still must be reported:
     /// report first, end once the report completes (never before — ending a
     /// call whose registration has not completed fails the report, #58).
-    func presentIncoming(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
-        guard !callerId.isEmpty, !callUUID.isEmpty else {
-            Diag.log("wake", ["call": callUUID, "outcome": "skip_no_ids"])
+    /// `mustReport`: no early return may skip `reportNewIncomingCall` — an
+    /// unreported VoIP push feeds iOS's delivery-suppression counter and the
+    /// app stops receiving wakes entirely (C15/C16). Missing ids fabricate,
+    /// redelivery re-reports (a duplicate rejection satisfies the contract),
+    /// busy/stale degrades to report-then-end.
+    func presentIncoming(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false, mustReport: Bool = false) {
+        guard !callUUID.isEmpty else {
+            if mustReport { reportStandalone(hasVideo: hasVideo) }
+            Diag.log(
+                "wake", ["call": callUUID, "outcome": mustReport ? "reported_no_ids" : "skip_no_ids"])
             return
         }
+        let caller = callerId.isEmpty ? Self.unknownCaller : callerId
         let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
-        if let existing = current, !existing.outgoing {
+        if let existing = current, !existing.outgoing, existing.uuid == uuid {
             // Redelivery of the call already ringing: it is reported — keep
             // it. Match on the call UUID, never on the peer: a *newer* call
             // from the same peer (a redial) must supersede below, or its
             // mustReport push ends in no reported call and PushKit stops
             // delivering VoIP pushes to a suspended app entirely.
-            if existing.uuid == uuid {
-                Diag.log("wake", ["call": callUUID, "outcome": "skip_redelivery"])
-                return
+            Diag.log("wake", ["call": callUUID, "outcome": "skip_redelivery"])
+            if mustReport {
+                // Re-report and let the duplicate rejection satisfy the
+                // contract; a silent skip is the unsafe form (C16).
+                let update = callUpdate(
+                    name: IncomingCallRouter.shared.name(for: caller), hasVideo: hasVideo)
+                provider.reportNewIncomingCall(with: uuid, update: update) { error in
+                    if let error {
+                        idfonLog(
+                            "idfon callkit: duplicate report rejected (expected): \(error.localizedDescription)")
+                    }
+                }
             }
+            return
+        }
+        if endImmediately, current != nil {
+            // A stale push while a call is live here (either direction):
+            // report-then-end standalone, never disturb it — a late cancel
+            // must not take down the ring that replaced it.
+            Diag.log("wake", ["call": callUUID, "outcome": "stale_push"])
+            if mustReport { reportStandalone(hasVideo: hasVideo) }
+            return
+        }
+        if let existing = current, !existing.outgoing {
             // Never steal a call this device answered.
             if answeredLocally(existing) {
                 idfonLog("idfon callkit: push ring ignored — busy")
                 Diag.log("wake", ["call": callUUID, "outcome": "skip_busy"])
+                if mustReport { reportStandalone(hasVideo: hasVideo) }
                 return
             }
             // A newer ring supersedes a stale unanswered one (#59): a dead
@@ -118,13 +155,13 @@ final class CallKitController: NSObject, CXProviderDelegate {
             endIncomingCall(existing, reason: .declinedElsewhere)
         }
         let update = callUpdate(
-            name: IncomingCallRouter.shared.name(for: callerId), hasVideo: hasVideo)
+            name: IncomingCallRouter.shared.name(for: caller), hasVideo: hasVideo)
         current = Call(
-            uuid: uuid, peerId: callerId,
+            uuid: uuid, peerId: caller,
             owner: hasVideo ? .video : .live,
             video: hasVideo, outgoing: false)
         AudioIO.shared.callKitWillStart()
-        idfonLog("idfon callkit: reporting push ring \(uuid.uuidString) from \(callerId)")
+        idfonLog("idfon callkit: reporting push ring \(uuid.uuidString) from \(caller)")
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
             guard let error else {
                 Diag.log("wake", ["call": callUUID, "outcome": "presented"])
@@ -136,10 +173,29 @@ final class CallKitController: NSObject, CXProviderDelegate {
             DispatchQueue.main.async {
                 idfonError("idfon callkit: push report failed: \(error.localizedDescription)")
                 Diag.log("wake", ["call": callUUID, "outcome": "report_failed"])
-                self?.abandonToBar(peerId: callerId)
+                self?.abandonToBar(peerId: caller)
             }
         }
-        refreshName(uuid: uuid, peerId: callerId)
+        refreshName(uuid: uuid, peerId: caller)
+    }
+
+    /// A push that must report but correlates with no call here (or would
+    /// disturb one): report a standalone system call and end it once the
+    /// report completes (never before — #58). Never touches `current`.
+    private func reportStandalone(hasVideo: Bool) {
+        let uuid = UUID()
+        idfonLog("idfon callkit: reporting standalone \(uuid.uuidString) (report contract)")
+        provider.reportNewIncomingCall(
+            with: uuid, update: callUpdate(name: nil, hasVideo: hasVideo)
+        ) { error in
+            if let error {
+                idfonError("idfon callkit: standalone report failed: \(error.localizedDescription)")
+                return
+            }
+            DispatchQueue.main.async {
+                self.provider.reportCall(with: uuid, endedAt: Date(), reason: .declinedElsewhere)
+            }
+        }
     }
 
     /// `mustReport` compliance: end the just-reported call once its

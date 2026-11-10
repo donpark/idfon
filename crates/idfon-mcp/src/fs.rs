@@ -99,6 +99,19 @@ impl FsServer {
                 },
                 None => failure(id, ERR_INVALID_PARAMS, "uri is required"),
             },
+            "tools/list" => success(id, self.tools()),
+            "tools/call" => {
+                let name = request.pointer("/params/name").and_then(Value::as_str);
+                let args = request.pointer("/params/arguments").cloned().unwrap_or(json!({}));
+                match (name, self.call_tool(name.unwrap_or(""), &args)) {
+                    (Some(_), Ok(result)) => success(
+                        id,
+                        json!({"content": [{"type": "text", "text": result.to_string()}], "isError": false}),
+                    ),
+                    (Some(_), Err((code, message))) => failure(id, code, &message),
+                    (None, _) => failure(id, ERR_INVALID_PARAMS, "name is required"),
+                }
+            },
             other => failure(id, ERR_METHOD_NOT_FOUND, &format!("method not found: {other}")),
         }
     }
@@ -122,11 +135,94 @@ impl FsServer {
         }
     }
 
+    /// The diagnostics tools (`docs/mcp-control.md`): read-only queries over
+    /// the `<root>/diag/` views the daemon materializes from `IDFON-DIAG/1`
+    /// envelopes. Read-only is load-bearing — no tool here mutates anything.
+    fn tools(&self) -> Value {
+        json!([
+            {
+                "name": "diag.tail",
+                "description": "Recent Idfon diagnostic events across devices (wake outcomes, push registration, token lifecycle). Events are {ts_ms, kind, detail, device, build}.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "device": {"type": "string", "description": "only this device's events"},
+                        "since": {"type": "integer", "description": "ts_ms lower bound"},
+                        "limit": {"type": "integer", "description": "max events returned, newest last (default 200)"},
+                    },
+                },
+            },
+            {
+                "name": "wake.trace",
+                "description": "One call attempt's timeline as recorded by the device: registration -> ring -> push -> report -> answer -> media. Returns {call, device, build, stages}.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"call": {"type": "string", "description": "the call UUID"}},
+                    "required": ["call"],
+                },
+            },
+        ])
+    }
+
+    fn call_tool(&self, name: &str, args: &Value) -> Result<Value, (i64, String)> {
+        match name {
+            "diag.tail" => {
+                let since = args.get("since").and_then(Value::as_u64).unwrap_or(0);
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(200).min(2000) as usize;
+                let device = args.get("device").and_then(Value::as_str);
+                let mut events = Vec::new();
+                let dir = self.root.join("diag");
+                let entries = std::fs::read_dir(&dir).map_err(|error| {
+                    (ERR_INVALID_PARAMS, format!("no diag views under {}: {error}", dir.display()))
+                })?;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if let Some(device) = device {
+                        if path.file_stem().and_then(|s| s.to_str()) != Some(device) {
+                            continue;
+                        }
+                    }
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    for line in text.lines() {
+                        let Ok(event) = serde_json::from_str::<Value>(line) else { continue };
+                        if event.get("ts_ms").and_then(Value::as_u64).unwrap_or(0) >= since {
+                            events.push(event);
+                        }
+                    }
+                }
+                events.sort_by_key(|event| event.get("ts_ms").and_then(Value::as_u64).unwrap_or(0));
+                let dropped = events.len().saturating_sub(limit);
+                events = events.split_off(dropped);
+                Ok(json!({"events": events, "dropped": dropped}))
+            }
+            "wake.trace" => {
+                let call = args.get("call").and_then(Value::as_str).unwrap_or("");
+                if call.is_empty()
+                    || !call
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+                {
+                    return Err((ERR_INVALID_PARAMS, "call must be an id (no path characters)".into()));
+                }
+                let path = self.root.join("diag").join(format!("wake-{call}.json"));
+                let bytes = std::fs::read(&path).map_err(|_| {
+                    (ERR_INVALID_PARAMS, format!("no wake trace for call {call}"))
+                })?;
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| (ERR_INVALID_PARAMS, format!("wake trace unreadable: {error}")))
+            }
+            other => Err((ERR_METHOD_NOT_FOUND, format!("tool not found: {other}"))),
+        }
+    }
+
     fn discover(&self) -> Value {
         json!({
             "resultType": "complete",
             "supportedVersions": [PROTOCOL],
-            "capabilities": {"resources": {}},
+            "capabilities": {"resources": {}, "tools": {}},
             "_meta": {
                 "io.modelcontextprotocol/serverInfo": {
                     "name": "idfon-mcp-fs",
@@ -365,6 +461,44 @@ mod tests {
         ).unwrap(), vec![0xff, 0x00, 0x01, 0xfe]);
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_tools_tail_and_trace() {
+        let dir = temp_dir("tools");
+        std::fs::create_dir_all(dir.join("diag")).unwrap();
+        std::fs::write(
+            dir.join("diag/iphone.jsonl"),
+            "{\"ts_ms\":1,\"kind\":\"push.received\",\"detail\":{\"call\":\"C1\"},\"device\":\"iphone\",\"build\":\"b1\"}\n{\"ts_ms\":2,\"kind\":\"wake\",\"detail\":{\"call\":\"C1\"},\"device\":\"iphone\",\"build\":\"b1\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("diag/wake-C1.json"),
+            "{\"call\":\"C1\",\"stages\":[{\"ts_ms\":1}]}",
+        )
+        .unwrap();
+        let server = FsServer::new(&dir, "acct").unwrap();
+
+        let tools = server.tools();
+        assert_eq!(tools.as_array().unwrap().len(), 2, "two read-only diagnostics tools");
+
+        let tail = server.call_tool("diag.tail", &json!({"limit": 1})).expect("tail");
+        assert_eq!(tail["events"].as_array().unwrap().len(), 1, "limit applies");
+        assert_eq!(tail["dropped"], 1, "older events are counted as dropped");
+        assert_eq!(tail["events"][0]["ts_ms"], 2, "newest survives the tail");
+
+        let filtered = server
+            .call_tool("diag.tail", &json!({"device": "iphone", "since": 2}))
+            .expect("filtered");
+        assert_eq!(filtered["events"].as_array().unwrap().len(), 1, "device+since filter");
+
+        let trace = server.call_tool("wake.trace", &json!({"call": "C1"})).expect("trace");
+        assert_eq!(trace["call"], "C1");
+        let missing = server.call_tool("wake.trace", &json!({"call": "NOPE"}));
+        assert!(missing.is_err(), "a missing trace is an error, not a hang");
+        let traversal = server.call_tool("wake.trace", &json!({"call": "../etc/passwd"}));
+        assert!(traversal.is_err(), "path characters are refused");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -191,6 +191,28 @@ See [live-voice agent](docs/live-voice.md),
 multi-contact model selection), [agent agency](docs/agent-agency.md),
 and [Eve ingress channel](docs/idfon-eve.md).
 
+## Privacy
+
+Idfon is peer-to-peer: content moves directly between the parties' devices,
+and keys live on the devices. The always-on edge is a **wake channel, not a
+content host**. The precise picture, because vague privacy claims are worse
+than none:
+
+| Who | What they see |
+|---|---|
+| The other party(ies) | Messages and media, end-to-end over iroh (QUIC). A relay (N0's or `relay.idfon.net`) may forward **ciphertext** when NAT demands it. |
+| The edge (`idfon.net` or self-hosted) | Push device tokens + topics per identity (needed to wake a phone), and — briefly — the **call invite** so a push-woken phone can pull it (in memory, ~5 min, dropped on cancel). The invite carries the call's media ticket; anyone who could read the edge store in those minutes could join that call's media. Self-host the edge if that is a concern for you. |
+| Apple (APNs) | **Identifiers only** — `call_uuid`, `caller_id`, `has_video`. No names, no content; display names resolve on-device from the user's own contacts. |
+| The iOS system call log | Real peer display names, by deliberate decision (donpark/idfon#48): the call log is the user's own device log. A “hide from call log” preference is the switch if that ever changes. |
+| A diagnostics monitor (`IDFON-DIAG/1`) | Event markers only — wake outcomes, push registration results, timings, build stamps. Sent **only** to a monitor peer the user configures; no audio, no message content, no token values. |
+| An MCP agent (see `docs/mcp-control.md`) | Reachable only over iroh, to parties the user approves: own devices (standing grants), approved parties (request-time approval block, short-lived scoped tickets), outsiders (one-shot tickets). Diagnostics are read-only first; every request and approval is audited; there is no public HTTP control endpoint. |
+
+Two honest notes: capability **tickets are bearer credentials** — whoever
+holds one can exercise its scoped rights until it expires, so treat them
+like passwords. And while the iPhone app is suspended and the screen is
+locked, nothing runs to be observed — the frozen window is visible only in
+what the app reported before and after it.
+
 ## Documentation
 
 Start at [docs/README.md](docs/README.md). It is the index of current docs by

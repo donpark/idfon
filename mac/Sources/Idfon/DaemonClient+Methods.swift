@@ -99,7 +99,7 @@ extension DaemonClient {
     }
 
     func sendText(to peer: String, _ text: String, conversation: String? = nil,
-                  context: String? = nil) async throws {
+                  context: String? = nil, fanout: Bool = false) async throws {
         var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
@@ -118,6 +118,13 @@ extension DaemonClient {
         // the peer take tens of seconds); the receiving daemon dedupes by
         // message id, so retries are safe.
         params["retries"] = AnyEncodable(3)
+        // Call messages fan out to every device of the account (C17): the
+        // invite must reach whichever device can ring, and stops must follow
+        // it there. Machines correlate by generation ticket, so a device
+        // ignores calls that are not its own.
+        if fanout {
+            params["delivery"] = AnyEncodable(["mode": AnyEncodable("all")])
+        }
         _ = try await requestWithLaunch(method: "message.send", params: params)
     }
 

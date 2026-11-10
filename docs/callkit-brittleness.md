@@ -89,7 +89,7 @@ real but the failing stage is not established.
 | C1 | Outgoing ringback inaudible | **Audio-queue race fixed; player render confirmed, acoustic check open.** On the first Gemini38 run, re-arm logged `lastRenderTime=nil` and `playing=false`; a queued stop cleared the loop. On the next run, output route was Speaker, loop RMS was 0.0732, and `sampleTime=22491 playing=true engine=true`. | `playLooping` now runs on the AudioIO queue, ordered after stop/start. User confirmation of audible ringback remains outstanding. |
 | C2 | No CallKit/PushKit ring from user's phone to wife's | **Configuration confirmed, not a code regression.** Latest caller trace says `callMode=bar` and `outgoing presentation=Bar`; the wife peer has no saved mode entry on that phone. Bar deliberately suppresses CallKit and PushKit. | Select **System call** on the caller's local contact record. For two-way system ringing, both phones need the setting on their own copy of the other person's contact. |
 | C3 | Gemini38 text replies but voice is unavailable | **Endpoint restored; LLM text turns reach the phone.** The phone receives `eve_call_return` and caller/agent transcripts. In the 04:36 run, local teardown began at 04:36:17 and the final answer text arrived at 04:36:20. The later 05:30 run shows repeated agent text replies; voice synthesis failed (C12). | Resolve the TTS provider failure and verify spoken output; retain supervision for `EVE_INSTANCE=voice` so the stable endpoint remains available. |
-| C4 | User's phone cannot be woken by APNs | **Open; likely shares the observed network issue.** PushKit registration retried and timed out; at 03:18 it also logged a lost network connection. At the same time, iroh PKarr publication logged `Socket is not connected` (OS error 57). The other phone had previously logged one registration `200`; its latest logs were unavailable. | Verify edge registration and APNs result for each identity; retry after the phone's route is stable and pull edge access/push logs. |
+| C4 | User's phone cannot be woken by APNs | **Superseded by the 2026-11-10 session.** Its next step was run and passed: this phone registers and rings reliably through a fresh edge (`rung=1` across runs, cold-launch wake verified). The no-ring causes were C2/C6/C19. Original evidence: PushKit registration retried and timed out; at 03:18 a lost network connection; iroh PKarr publication logged `Socket is not connected` (OS error 57); the other phone had logged one registration `200` but its latest logs were unavailable. | — |
 | C5 | Wife-phone logs unavailable | **Open, tooling.** `devicectl copy from` lost its remote-device connection; no retry was made without new evidence. | Unlock/reconnect the phone, then copy its per-run app and FFI logs. |
 | C6 | VoIP capability-ticket string rejected | **Fixed** in `1ecd2483`. The daemon returns rcan as a JSON string; the apps re-encoded it, quoting the token so registration and ring auth failed. iOS `PushWake` and mac `CallRing` now parse the token string and retain the legacy-object fallback. | No action; retain a registration/ring smoke test. |
 | C7 | Camera/mic survived hangup or restarted after screen-lock interruption | **Fixed** in `ffe9ad25` and `1ecd2483`. Late async starts are epoch-guarded; camera stop is unconditional, and interruption/deferred restart is gated by explicit started state. | Device retest is still the acceptance check; do not infer from a successful build alone. |
@@ -100,6 +100,39 @@ real but the failing stage is not established.
 | C12 | LLM text arrived without agent voice | **Root cause confirmed.** The active holder uses `agents/voice/live.json` with `server-cascade`, matching the signed ticket. Its relay TTS returned HTTP 401 `quota_exceeded`: 1 credit remained while greeting/reply requests needed 5–66 credits. The bridge/LLM still produced text, but speech synthesis failed. Don has since selected on-device Nemotron STT and Phonon TTS for this contact; device verification is pending. | Verify that the on-device selection owns both audio halves on the next call; it should bypass the server relay's ElevenLabs TTS. |
 | C13 | No visibility into LLM token supply or usage | **Sequential model routing is now rebuilt per instance; token-usage gap remains.** The Gemini `voice` instance was rebuilt with `google/gemini-3.8-flash`; starting `gpt6luna` detected the shared manifest mismatch and rebuilt it to `openai/gpt-6-luna` (`gateway`, target `openai`). The already-running voice process was left up. No per-turn token counts or gateway usage receipts are available. Vercel did not run out during this incident. | Add redacted per-turn provider/model, request ID, input/output token usage, and remaining budget when available. Never log prompt contents or credentials. The build output is shared, so do not start different model instances concurrently. |
 
+| C15 | Persistent no-ring that survives code fixes | **Device verdict 2026-11-10: not the cause on this phone.** The lock-screen wake works — cold-launch system ring through the test rig (build 22, app killed, `rung=1`, delivered). No delivery suppression is active; the stacked causes were upstream (C2 stale records + C6 wire regression + C19 edge panic). Re-verify on the production config. Original hypothesis below stays documented: Apple DTS: roughly 5 VoIP pushes that end in no reported call within ~24 h and iOS stops delivering background VoIP pushes to the app on that device (`VoIP push for app … dropped on the floor`); the counter clears via a daily `Ran nightly VOIP reconciliation` maintenance task (24–48 h+, later on busy devices), by reinstall, probably by app update. No query API, no APNs error. | If a ring ever fails with the chain healthy: sysdiagnose right after, grep `callservicesd`/`apsd` for the signatures above. |
+| C16 | Report-skip paths can feed the suppression counter | **Code risk, not yet observed.** `CallKitController.presentIncoming` early-returns with no `reportNewIncomingCall` on `skip_redelivery` (same UUID), `skip_busy`, `skip_no_ids`; classic-delegate pushes carry `mustReport=true` unconditionally. Apple DTS: re-report the existing call UUID and let the duplicate rejection satisfy the contract — returning early "because my state says already-handled" is unsafe. | Report-and-let-reject on duplicate UUID; report-then-end for busy/no-ids pushes that must report. |
+| C17 | Call invites have no multi-device failover | **Fixed 2026-11-09.** The `deliver` loop in `crates/idfon-daemon`: `Failover` now walks the device list (the error arm's `break` disabled failover entirely); `One` stays single-target, `All` delivers everywhere. Call messages (`sendText(fanout: true)` in both trees) send `delivery: {mode: all}` — dial/answer/re-publish invites, stops, and `call_started` fan out to every device of the account; the machines correlate by generation ticket and already ignore foreign calls and return legs with no active call. Host test `delivery_policy_walks_the_device_list`. | Device E2E: two-device ring-all, answer on one, the other stops (cancel push + stop envelope), quick redial. |
+| C19 | An edge built since the Nov-5 lock refresh kills every ring/cancel mid-request | **Fixed 2026-11-10.** `c4bb032b` (2026-11-05, "refresh iroh crate locks") pulled `jsonwebtoken` 11, whose JWT signing panics with no crypto feature ("Could not automatically determine the process-level CryptoProvider"). Register never signs a JWT and kept working; every ring/cancel fan-out panicked in `HttpApns::bearer`, the connection died before an access-log line, and callers saw `ring failed: The network connection was lost.` (URLSession -1005 — indistinguishable client-side from a network fault; a raw HTTP sink proved the request well-formed). Fix: `features = ["rust_crypto"]` + regression test `jwt_signing_has_a_crypto_provider`. A top candidate for "rings stopped a few days ago" on any edge rebuilt after Nov 5. | Verify what the production (droplet) edge runs; redeploy with the fix. |
+| C20 | Answered call, caller stuck in "calling": the media leg never connects | **Fix landed 2026-11-10 (device retest pending).** Root cause: live tickets are endpoint-id-only by crate design, the publisher mints the ticket ms after bind (before pkarr publishes), iOS has no mDNS multicast, and `merge_known_addrs` rejected the shell's fallback addresses (they belong to the daemon endpoint — different id from the per-call live endpoint). So every call-setup dial raced discovery and timed out. Fix: the publisher's own `EndpointAddr` (relay + direct, `Endpoint::addr()`) rides the envelope as an `addr=` line (base64) on dial/answer/re-publish invites; subscribers merge it into the ticket — the id check passes because both share the live endpoint id — and dial with no lookup. New FFI `media_live_endpoint_addr`; both trees emit/consume; old peers fall back to discovery as before. | Device retest: answer both directions, expect connect <1 s; then the audible-media check. |
+| C23 | No quick answer signal: the caller sits in "Calling" after the callee already answered | **Fixed 2026-11-10 (device retest pending).** The answer flow sent `call_started` + the return invite only *after* the media publish, and the caller ignored `call_started` ("informational only") — so the "Calling" UI ended only when the heavy return invite landed (5-10 s observed). Fix: `call_started` is sent **at the answer tap, before the publish** and the machine honors it (`CallLifecycle.remoteAnswered`: dialing → connected at once; the return invite's join still carries the answer cue exactly once; stray/stale signals are ignored). Decline was already instant (ticketed stop). 2026-11-10 clean run also showed the remaining delivery suspect: every app restart binds a new port, so the stored `endpoint_addr` goes stale and message delivery depends on iroh discovery rescue — the message-plane twin of C20. | Device retest: answer → caller leaves "Calling" in <1 s while media follows; then measure the delivery latency (P0 timing) to attribute the remainder. |
+| C21 | Simultaneous mutual dialing (glare) leaves two live calls and echoes | **Fixed 2026-11-10 (device retest pending).** Deterministic tie-break: both sides compare generation tickets — **the lower ticket wins** (symmetric "incoming wins" was a trap: both sides would drop and ring dead calls). The loser drops its dial and rings the winner's call; the winner declines the incoming and keeps dialing. Return legs now carry `return=1` (the wire flag that separates "their fresh call" from "their answer" — previously unset by Swift and unread). Compat: an old peer that does not set the flag reads as a fresh call during glare; update both ends together. `CallLifecycleCheck` covers both outcomes in both trees. | Device retest: dial each other at once — exactly one call survives; then the delayed-accept case. |
+| C22 | A panicking route handler kills the connection with no access-log line | **Fixed 2026-11-10.** The gateway's `LocalRoute` boundary now catches handler panics and answers 500 with a stderr line (`local route panicked; answering 500`) — the client gets a response and the log gets a marker instead of the bare -1005 that sent us client-side hunting during C19. | Keep `jwt_signing_has_a_crypto_provider`-style tests as the cheap guard; a gateway-level panic-route test needs a route fixture (skipped). |
+
+### 2026-11-10 test-rig session (verification)
+
+The local rig (edge-deploy-checklist §A) passed the core matrix on build 22:
+
+- mac → locked iPhone, app killed: `/_push/ring` 200 `rung=1`, cold-launch
+  system ring on the lock screen; ring-over cancel delivered (`rung=1`);
+  the push-woken phone answered and its session rotate reached the mac
+  (invite delivery confirmed). iPhone → mac: mac's Bar rings, answered.
+- Rig gotchas worth keeping: (1) the mac's peer records were stale
+  (identity rotated; all peers `call_mode: bar` — C2 in the flesh) — re-pair
+  via `scripts/pair-apple-channels.sh` and `peer update --call-mode call_kit`;
+  (2) `devicectl` cannot launch an app on a locked iPhone
+  (SBMainWorkspace "Locked"); (3) `mac/Info.plist` gained
+  `NSAllowsLocalNetworking` + `NSLocalNetworkUsageDescription`, mirroring iOS
+  for plain-HTTP LAN edges.
+
+Regression repackaging (2026-11-10): the session's diagnostics became
+`scripts/apns-key-probe.mjs` (key-scope probe), `scripts/ring-e2e.sh` (the
+wake-chain regression: registration → ring fan-out → delegate marker),
+`ios/Checks/LiveInviteCheck` + `mac/Checks/LiveInviteCheck` (the invite wire
+envelope incl. the C20 `addr=` line), and
+`merge_known_addrs_needs_a_matching_endpoint_id` (the C20 guard) in
+`iroh-c-ffi`. The live-publish FFI now logs its `EndpointAddr` so device
+traces show whether the Relay entry was present (the C20 reachability floor).
 | C14 | gpt6luna contact did not answer | **Root cause confirmed; service restored.** At 07:29:42 UTC, iOS sent to peer `89f71f…` (the `GPT-6-Luna` contact); messages `msg_628` and `msg_629` failed with `connect timed out after 10s`. All processes in `~/.idfon/gpt6luna` were stopped. I restarted that instance with its existing holder key and pinned port 58159, preserving endpoint `89f71f…`; its Eve process is now `openai/gpt-6-luna` and bridge health is 200. The separate `~/.idfon/llm` endpoint `b0766318…` is the `eve` contact, not `gpt6luna`. | Verify the next user-placed call reaches the restarted service and Phonon speaks the reply. No re-pair is needed. |
 
 These are distinct failure classes: a Bar-mode call has no push by design; an APNs
@@ -167,6 +200,71 @@ is the `google/gemini-3.8-flash` model selected in caller metadata for the local
   That should make the caller own both audio halves and bypass relay TTS; verify
   on the next call. Vercel did not run out of tokens during the previous incident.
 
+## Platform semantics (oracle-verified, 2026-11-09)
+
+Two `gpt-6.1-sol` oracle consultations (Apple push/call semantics; stable
+addressing over rotating endpoints) plus a code audit. Verdicts marked
+**documented** (Apple docs/WWDC), **DTS** (Apple engineer statements,
+empirical), or **practice** (industry systems).
+
+**Apple side:**
+
+- **Report timing (documented):** `reportNewIncomingCall` must be submitted
+  inline in the PushKit delegate before it returns (WWDC19 "Advances in App
+  Background Execution"). An independent `callservicesd` check ~7 s after
+  delivery kills with `0xbaadca11`. The PushKit completion handler does not
+  substitute for reporting.
+- **Report-then-end (documented):** fully satisfies the obligation for
+  stale/cancelled calls; no minimum ring duration. Duplicate push for an
+  already-reported call: re-report the same UUID and let the duplicate
+  rejection count (DTS) — early return is unsafe (see C16).
+- **`mustReport` (documented, iOS 26.4+):** the system's own marker. Classic
+  delegates must assume every push needs a report.
+- **Delivery suppression (DTS):** see C15 — the top suspect when no-ring
+  persists across code fixes. Force-quit (swipe-away): VoIP pushes normally
+  still relaunch the app (empirical; matches our E2E). Focus/DND can suppress
+  ringing without any delegate failure; triage stages stay separate — APNs
+  accepted → device received → delegate entered → report result → ringing →
+  connection.
+- **Tokens (documented/DTS):** `didUpdate`/`didInvalidatePushTokenFor` are
+  authoritative; APNs `200` proves acceptance only (DTS: uninstalled apps can
+  still 200); `410 Unregistered` carries a ms timestamp and must prune the
+  registration (C18).
+- **Environment (documented):** the *receiving* app's signed `aps-environment`
+  decides sandbox vs production (dev profile → sandbox; TestFlight/App
+  Store/ad-hoc/enterprise → production). A dual-environment `.p8` does not
+  make a token valid in both. Inspect the installed app's entitlements.
+- **Ops (documented):** `apns-expiration: 0` or a few seconds for calls;
+  payload ≤ 5120 bytes; provider JWT refresh ≥ 20 min apart (ours: 50 min,
+  good); test without a debugger attached. Cancel/update pushes are against
+  Apple guidance (use the post-ring connection) — P2P has no such connection;
+  keep them, but every one must end in a reported call.
+
+**Addressing side (the "handles" question):**
+
+- The account-key handle model (`docs/multi-device.md`: account signing key +
+  signed device set + per-device transport keys) is the right shape — the same
+  separation as Signal ACI/devices, Matrix MXID/device_keys, SIP
+  address-of-record/contacts. **No further username/DNS/WebFinger layer is
+  justified** for private manual contacts; reachability comes from current
+  registration, not a nicer name.
+- What a signed device set does **not** give: freshness and reachability. The
+  industry repair for a stale roster is **rendezvous + a short-lived pending
+  signaling record** (SIP RFC 8599 "push bucket": hold the request, push, wait
+  for the client to re-register, forward). Ranked for idfon: account-keyed
+  edge lookup > short-lived pending-call mailbox > proactive signed roster
+  updates > authenticated inbound learning > re-pairing.
+- **Multi-device call semantic (practice: RingRTC, Matrix
+  `m.call.select_answer`, SIP forking):** offer to all eligible devices in
+  parallel; exactly one *explicit user acceptance* arbitrates; losers end
+  "answered elsewhere"; transport ack ≠ human acceptance. Calls must not
+  inherit the generic sender's first-target-only policy (C17).
+- **Ring must be self-sufficient (documented Apple shape):** the push carries
+  enough to present the call; Answer is an intent to connect; signaling rides
+  the edge while iroh connects; end truthfully if setup fails. The honest
+  promise: *a valid call rings even when P2P signaling has not succeeded* —
+  not *a call connects when every path fails*.
+
 ## Where the implementation is brittle
 
 ### 1. Ringing is downstream of media startup
@@ -232,6 +330,53 @@ answer, media-ready, and cancel/end. Without these, “no ring” conflates “n
 “no APNs request,” “APNs accepted but not delivered,” and “CallKit declined the
 report.”
 
+## Race conditions: inventory and the anti-race toolkit
+
+Races are the meta-cause behind much of this ledger (C1, C7, C10, C16, C20,
+C21, C23, #58, #60 are all races). They cannot be eliminated in a
+distributed, push-driven, multi-device system — "rock solid" means **every
+interleaving lands in an accepted state**. That is achieved by enumerating
+invariants (one live call per generation; every must-report push ends in a
+reported call; a stop ends exactly its call; the answer cue fires exactly
+once; a late artifact never resurrects a dead call…) and making every
+transition preserve them under any ordering. The mechanisms below are how
+this codebase enforces them — new call-path code should use these, not invent
+synchronisation.
+
+| Race (where it bit) | The simple mechanism that tames it |
+|---|---|
+| Report-then-end (#58): ending before the report completes fails the report | Order the irreversible, system-facing action **first**; reconcile after its completion callback |
+| `unknownCallUUID` code 4: touching a UUID before its action completes | Serialize all `CXTransaction`s on one queue; never touch a call before its start/answer action lands |
+| Push vs invite arriving in either order | One **ticket-derived UUID** for both transports; whichever arrives second dedupes onto it |
+| Duplicate push / redelivery (C16) | Re-report the same UUID and let the duplicate rejection count — idempotence over cleverness |
+| Quick cancel vs late pull/invite (C16/P1) | **Epoch/state check before acting on late data** (`stillExpects`): discard stale work instead of trying to prevent it |
+| Stale stop vs the next call (#60/C10) | **Generation tickets** carried by every stop; an artifact names exactly one call |
+| Late async media starts after teardown (C7) | **Publish epoch guards**: work carries the epoch it started for; on completion, a moved-on epoch discards the result |
+| Ring loop vs queued stop (C1): the stop cleared the just-stored loop | **One owner queue per resource** — serialize mutations (the AudioIO queue fix); serialization beats synchronisation |
+| pkarr publish vs first lookup (C20) | **Carry the result, don't re-resolve** (the `addr=` line); when resolution is unavoidable, retry with fresh state, never the poisoned cache |
+| Duplicate delivery / event replay (join twice) | Idempotent joins (`joinedTicket`), message-id dedupe at the daemon |
+| Event bursts stranded out of order (the `wait` truncate bug) | Restore ordering **at the source** (cursor order) — consumers must not sort it out |
+| Answer vs heavy publish (C23): the UI waited for media | **Split the quick signal from the heavy payload** (`call_started` at the tap; ticket later) |
+| Simultaneous mutual dial (C21, glare) | **Explicit tie-break, not prevention** (designed: the incoming call wins, our dial drops — needs the `return=1` wire flag so a return leg is distinguishable from a fresh invite; today Swift never sets it) |
+| Concurrent roster writes (multi-device) | Single writer or serialized updates at the edge — not distributed consensus |
+| Registration retry loop vs token update | One loop, newest token wins (the `registerWithRetries` shape) |
+
+**Toolkit, ranked by how often it saves you:**
+
+1. **Epochs/generations on every async job** — discard stale results. One
+   guard line per completion beats any lock.
+2. **One queue per resource** — every mutation of a resource ordered on one
+   queue turns races into deterministic sequences.
+3. **Idempotent operations** — retries, duplicates and replays become
+   harmless; the wrong order then costs nothing.
+4. **Deterministic precedence rules** — when two live states collide, a
+   written rule decides (newer ring supersedes stale; an answered call is
+   never stolen; the incoming call wins glare). Log which rule fired.
+5. **Bound every wait** — pending states with timeouts (the 20 s pending
+   answer, the dial watchdog): a race may delay a call but never hang it.
+6. **Wire the distinctions** — when the protocol cannot tell two cases apart
+   (a return leg vs a fresh invite!), the ambiguity *is* a race. Add the flag.
+
 ## Options
 
 | Option | Locked/suspended phone | Complexity | Main tradeoff |
@@ -250,6 +395,17 @@ parts of the stack; it cannot make iOS's background execution model disappear.
 ## Recommended hardening plan
 
 ### P0 — Close the current observability gap
+
+- **Verify or kill the suppression hypothesis first (C15):** sysdiagnose after
+  a failed locked-screen ring, grep `callservicesd`/`apsd` for the
+  `dropped on the floor` / `failed to report` / `nightly VOIP reconciliation`
+  signatures; then reinstall (or wait 48 h) and retest. This decides whether
+  any code change can help at all.
+- **Harden the report path (C16):** every push that must report ends in a
+  `reportNewIncomingCall` call — duplicate UUIDs re-report and let the
+  rejection count; busy/no-ids pushes report-then-end.
+- **Edge push ops (C18):** short `apns-expiration`, prune tokens on
+  410/BadDeviceToken, explicit per-token environment.
 
 - Log before and after `media_live_start_with_profile`, including elapsed time,
   returned-ticket presence, and `media_live_last_error`.
@@ -272,6 +428,26 @@ the media ticket separately when it becomes available. The receiver may present 
 CallKit ring immediately, retain an early answer, and join only when the media offer
 arrives. If publishing fails, send an explicit cancel/end for the same UUID. Keep
 media authorization ticket-based; the call UUID is correlation, not authority.
+
+Extend the edge's `/_push/*` service into the **pending-call rendezvous** the
+wake needs (oracle 2, 2026-11-09): the caller submits an authenticated,
+expiring call record addressed to the account *before* ringing; the edge
+persists it, fans the ring out; the woken callee pulls the record and answers
+with its **current endpoint** (or connects outbound to the caller) — so the
+call survives a stale roster, endpoint rotation, and slow media startup
+(SIP RFC 8599 push-bucket shape). Offer to **all** eligible devices in
+parallel with one explicit acceptance winning; transport acks never stop the
+account-level ring.
+
+**Landed 2026-11-09 (offer slice):** the ring carries the invite (`invite`
+field), the edge keeps it ~5 min under the call uuid, and a push-woken callee
+pulls it via `/_push/pull` when the iroh envelope has not landed — routed
+through the ordinary envelope path, so same-UUID dedupe and the
+pending-answer machinery are unchanged; `CallKitController.stillExpects`
+drops a resurrected offer after a quick cancel. The fan-out semantics from
+C17 (all devices, generation-ticket correlation) are in the same commit
+lineage. Remaining in P1: the call-attempt UUID decoupled from the media
+ticket (ring before publish) — gated on the P0 publisher-stage evidence.
 
 This is a protocol/state-machine change. It must preserve: same-UUID dedupe between
 PushKit and iroh, PushKit's report-before-completion rule, answer-before-offer,
@@ -313,7 +489,12 @@ separate call-attempt signaling from media-ticket readiness if locked-screen
 ringing must work even when media startup is slow. Keep Bar as the intentionally
 limited low-complexity mode.
 
+**Endpoint rotation is not the primary no-ring cause:** the account-keyed push
+registry already survives it. The real gaps are roster freshness, invite fan-out
+(C17), and the platform-side suppression state (C15) — see "Platform semantics"
+and `docs/multi-device.md` for the handles verdict.
+
 **Primary references:** `ios/Idfon/IncomingCallRouter.swift`,
 `ios/Idfon/VideoCall.swift` (`dialNow`), `ios/Idfon/PushWake.swift`,
 `ios/Idfon/CallKitController.swift`, `docs/callkit-integration.md`,
-`docs/troubleshooting.md`.
+`docs/multi-device.md`, `docs/troubleshooting.md`.

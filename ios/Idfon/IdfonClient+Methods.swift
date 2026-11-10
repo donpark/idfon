@@ -268,7 +268,8 @@ extension IdfonClient {
     /// that care about delivery — call dials — watch the returned operation.
     @discardableResult
     func sendText(to peer: String, _ text: String, conversation: String? = nil,
-                  context: String? = nil, identity: String? = nil) async throws -> String? {
+                  context: String? = nil, identity: String? = nil,
+                  fanout: Bool = false) async throws -> String? {
         var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
@@ -288,6 +289,13 @@ extension IdfonClient {
         // the peer take tens of seconds); the receiving daemon dedupes by
         // message id, so retries are safe.
         params["retries"] = AnyEncodable(3)
+        // Call messages fan out to every device of the account (C17): the
+        // invite must reach whichever device can ring, and stops must follow
+        // it there. Machines correlate by generation ticket, so a device
+        // ignores calls that are not its own.
+        if fanout {
+            params["delivery"] = AnyEncodable(["mode": AnyEncodable("all")])
+        }
         let result = try await request(method: "message.send", params: params)
         return result?["operation_id"]?.stringValue
     }

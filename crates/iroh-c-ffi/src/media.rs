@@ -765,6 +765,29 @@ pub fn media_live_last_error() -> char_p::Box {
         .try_into()
         .unwrap()
 }
+
+/// The live session's own dial address as `EndpointAddr` JSON — what the far
+/// side merges into the ticket (`media_live_subscribe_with_addrs`) via the
+/// envelope's `addr` line (C20). A live ticket is endpoint-id-only and a fresh
+/// endpoint's pkarr record is not resolvable yet at call-setup time, so
+/// id-only dials race discovery and time out; `Endpoint::addr()` carries the
+/// relay and current direct addresses, which dial without any lookup. Empty
+/// when no live session is running.
+#[ffi_export]
+pub fn media_live_endpoint_addr() -> char_p::Box {
+    let json = LIVE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|session| serde_json::to_string(&session.live.endpoint().addr()).ok())
+        .unwrap_or_default();
+    if !json.is_empty() {
+        // Logged so device traces show whether the addr carried a Relay
+        // entry (the reachability floor when direct addresses are stale).
+        tracing::info!(target: "idfon.media", addr = %json, "live endpoint addr");
+    }
+    json.try_into().unwrap()
+}
 #[ffi_export]
 pub fn media_live_stop() {
     // Fold the per-call report before the counters reset (health §B2.2).
@@ -2166,6 +2189,38 @@ mod tests {
         super::set_sub_state(super::SUB_IDLE);
         assert_eq!(super::media_live_state(), 0);
         *super::PATH_CHANGED_AT.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn merge_known_addrs_needs_a_matching_endpoint_id() {
+        // C20: only the publisher's own live addresses may fill a ticket.
+        // The contact's stored (daemon-endpoint) addresses never match a
+        // per-call live endpoint and must be ignored, not merged.
+        let zero = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 32 zero bytes
+        let mut ticket = super::LiveTicket::deserialize(&format!("iroh-live:{zero}/t")).expect("ticket");
+        let id = "0000000000000000000000000000000000000000000000000000000000000000";
+        let own = format!(
+            r#"{{"id":"{id}","addrs":[{{"Ip":"127.0.0.1:1"}}]}}"#
+        );
+        let other = own.replace(id, "1111111111111111111111111111111111111111111111111111111111111111");
+
+        // Matching id + empty ticket addrs → merged.
+        super::merge_known_addrs(&mut ticket, &own);
+        assert!(!ticket.endpoint.addrs.is_empty(), "own addresses merge in");
+
+        // Mismatched id (the daemon endpoint's stored addrs) → untouched.
+        let mut fresh = super::LiveTicket::deserialize(&format!("iroh-live:{zero}/t")).expect("ticket");
+        super::merge_known_addrs(&mut fresh, &other);
+        assert!(fresh.endpoint.addrs.is_empty(), "foreign addresses are ignored");
+        super::merge_known_addrs(&mut fresh, "not json");
+        assert!(fresh.endpoint.addrs.is_empty(), "garbage is ignored");
+
+        // A ticket that already carries addresses keeps them.
+        let mut filled = super::LiveTicket::deserialize(&format!("iroh-live:{zero}/t")).expect("ticket");
+        filled.endpoint = serde_json::from_str(&own).expect("addr");
+        let before = filled.endpoint.addrs.clone();
+        super::merge_known_addrs(&mut filled, &own);
+        assert_eq!(filled.endpoint.addrs, before, "existing addresses are kept");
     }
 
     #[test]

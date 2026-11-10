@@ -25,6 +25,19 @@ add or materially change a doc, update the index.
 
 - Rebuild scope: `docs/build.md` maps a change to the subprojects that must be
   rebuilt. When you change something shared, say which subprojects to rebuild.
+- **Debugging calls/wakes/push: ask, don't grep.** Before any device-log
+  archaeology (`devicectl` pulls, sysdiagnose, timestamp reconstruction), query
+  the diagnostics the apps already report: `wake.trace` (one call's timeline:
+  registration → ring → push → report → answer → media) and `diag.tail` via
+  `idfon-mcp`; raw views at `<data-dir>/diag/`; edge health at `/_push/health`.
+  See `docs/mcp-control.md` + `docs/diag.md`. (2026-11-10: hours were lost
+  reconstructing from USB logs what the app was already reporting.)
+- **Privacy posture lives in `README.md` ("Privacy").** Keep any new surface
+  consistent with it: content end-to-end between the parties, the edge holds
+  wake tokens + brief invites only, APNs payloads are identifiers-only,
+  diagnostics are markers to a user-configured monitor, and control surfaces
+  are tier-approved over iroh. If a change would add a new party to the table,
+  update that table first.
 - Rust: `cargo test -p <crate>` and `cargo check --workspace --all-targets`.
 - macOS app: `swift build` in `mac/`.
 - iOS: source files can be syntax-checked with `swiftc -parse <file>`; a full

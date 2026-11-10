@@ -165,13 +165,18 @@ apps already hold.
 | Route | Body | Auth |
 | --- | --- | --- |
 | `POST /_push/register` / `unregister` | `{voip_token, topic?}` | a capability ticket **issued by the ref** — the app self-issues one through the daemon's existing `capability.ticket` RPC, so only the identity's holder can claim its wake channel |
-| `POST /_push/ring` | `{call_uuid, caller_id, has_video}` | a capability ticket **issued by the ref** (the caller's contact ticket — being a contact is the right to ring) **or by the caller** (a self-issued statement: identified + rate-limited, so a plain paired peer can ring before a contact ticket exists). A subject-bound ticket must match `caller_id` |
+| `POST /_push/ring` | `{call_uuid, caller_id, has_video, invite?}` | a capability ticket **issued by the ref** (the caller's contact ticket — being a contact is the right to ring) **or by the caller** (a self-issued statement: identified + rate-limited, so a plain paired peer can ring before a contact ticket exists). A subject-bound ticket must match `caller_id` |
 | `POST /_push/cancel` | `{call_uuid}` | same as ring |
+| `POST /_push/pull` | `{call_uuid}` | a capability ticket **issued by the ref** (the callee self-issues) |
 
 Fan-out sends one VoIP push (`apns-push-type: voip`, topic `com.idfon.ios.voip`,
 priority 10) per registered token; the payload carries **identifiers only**
 (`call_uuid`, `caller_id`, `has_video`, `cancel`) — the app resolves display
-names from its own peer store, keeping peer names out of APNs logs. Tokens
+names from its own peer store, keeping peer names out of APNs logs. When the
+ring carries `invite`, the edge keeps it ~5 min (in-memory, SIP push-bucket
+shape) under the call uuid; a push-woken callee whose iroh envelope has not
+landed pulls it with `/_push/pull` and feeds it through the ordinary envelope
+path (same-UUID dedupe; a quick cancel kills the offer with the call). Tokens
 persist to `--push-state` (default `<key>.push.json`); APNs is configured with
 `--push-apns-key/--push-apns-key-id/--push-apns-team` (optional topic/url), and
 with no key the routes answer 503 instead of dropping rings silently. Per-issuer

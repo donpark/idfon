@@ -26,13 +26,17 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, Response, StatusCode, Uri};
 use hyper::body::Incoming;
 use idfon_gateway::{LocalRoute, ResponseBody};
 use idfon_core::CapabilityTicket;
+
+/// VoIP pushes are call-time events: expire them shortly after instead of
+/// storing for a later, useless wake (late pushes cause ghost rings).
+const PUSH_EXPIRATION_SECS: u64 = 30;
 
 /// Ring fan-out boundary: Apple's APNs in production, a recorder in tests.
 pub trait ApnsSender: Send + Sync + 'static {
@@ -143,9 +147,35 @@ impl HttpApns {
     }
 
     /// The refusal body that means "this token belongs to the other
-    /// environment".
+    /// environment" (observed: `BadEnvironmentKeyInToken`; Apple docs also
+    /// spell it `BadEnvironmentKeyIdInToken` — match both).
     fn env_error(error: &anyhow::Error) -> bool {
-        error.to_string().contains("BadEnvironmentKeyInToken")
+        let text = error.to_string();
+        text.contains("BadEnvironmentKeyInToken") || text.contains("BadEnvironmentKeyIdInToken")
+    }
+
+    /// A refusal that means "this token is no longer installed" (410):
+    /// prune it.
+    fn unregistered_error(error: &anyhow::Error) -> bool {
+        let text = error.to_string();
+        text.contains("Unregistered") || text.contains("ExpiredToken")
+    }
+
+    /// `BadDeviceToken` is ambiguous (documented env mismatch vs dead
+    /// token): try the counterpart host once, prune only when both refuse.
+    fn bad_token_error(error: &anyhow::Error) -> bool {
+        error.to_string().contains("BadDeviceToken")
+    }
+
+    /// Wraps a refusal that means the registration is dead — the fan-out
+    /// prunes the token when it sees this.
+    fn stale_token(error: &anyhow::Error) -> anyhow::Error {
+        anyhow::anyhow!("stale apns token: {error}")
+    }
+
+    /// Whether a send error marks the token dead (see [`Self::stale_token`]).
+    pub(crate) fn is_stale_token(error: &anyhow::Error) -> bool {
+        error.to_string().starts_with("stale apns token")
     }
 
     fn bearer(&self) -> anyhow::Result<String> {
@@ -186,6 +216,10 @@ impl HttpApns {
             .header("apns-topic", topic)
             .header("apns-push-type", "voip")
             .header("apns-priority", "10")
+            .header(
+                "apns-expiration",
+                (now_seconds() + PUSH_EXPIRATION_SECS).to_string(),
+            )
             .json(payload)
             .send()
             .await
@@ -222,29 +256,51 @@ impl ApnsSender for HttpApns {
         Box::pin(async move {
             let authorization = authorization?;
             let host = if env == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
-            match Self::post(&client, &authorization, host, &token, &topic, &payload).await {
-                Ok(()) => Ok(()),
-                Err(error) if Self::env_error(&error) => {
-                    // Wrong environment for this token: flip to the
-                    // counterpart host and remember the verdict so the next
-                    // ring does not pay the refusal again.
-                    let other = env.other();
-                    let other_host = if other == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
-                    tracing::warn!(
-                        target: "idfon.edge.push",
-                        from = host,
-                        to = other_host,
-                        "token refused by its environment; trying the counterpart"
-                    );
-                    Self::post(&client, &authorization, other_host, &token, &topic, &payload).await?;
-                    envs
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .insert(token, other);
-                    Ok(())
-                }
-                Err(error) => Err(error),
+            let refused =
+                match Self::post(&client, &authorization, host, &token, &topic, &payload).await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => error,
+                };
+            if Self::unregistered_error(&refused) {
+                return Err(Self::stale_token(&refused));
             }
+            // Wrong environment (env refusal) or an ambiguous
+            // BadDeviceToken: the counterpart may be the right host. If it
+            // also refuses with a token error, the token is dead in both —
+            // prune it at the fan-out.
+            if Self::env_error(&refused) || Self::bad_token_error(&refused) {
+                let other = env.other();
+                let other_host = if other == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
+                tracing::warn!(
+                    target: "idfon.edge.push",
+                    from = host,
+                    to = other_host,
+                    "token refused by its environment; trying the counterpart"
+                );
+                return match Self::post(&client, &authorization, other_host, &token, &topic, &payload)
+                    .await
+                {
+                    Ok(()) => {
+                        envs
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(token, other);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        envs
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .remove(&token);
+                        if Self::unregistered_error(&error) || Self::bad_token_error(&error) {
+                            Err(Self::stale_token(&error))
+                        } else {
+                            Err(error)
+                        }
+                    }
+                };
+            }
+            Err(refused)
         })
     }
 }
@@ -316,6 +372,19 @@ impl PushStore {
     }
 }
 
+/// A ring's invite kept briefly so a push-woken callee can pull it when the
+/// iroh envelope has not landed yet (SIP push-bucket shape,
+/// docs/callkit-brittleness.md P1). In-memory and short-lived: the iroh
+/// invite path remains the durable one.
+const OFFER_TTL: Duration = Duration::from_secs(300);
+
+struct StoredOffer {
+    account: String,
+    caller_id: String,
+    invite: String,
+    expires: Instant,
+}
+
 /// The edge's `/_push/*` routes. `apns: None` answers 503 (push unconfigured)
 /// instead of silently accepting rings nobody receives.
 pub struct PushRoutes {
@@ -326,6 +395,8 @@ pub struct PushRoutes {
     /// Per-issuer fixed window: ringing is a wake channel, keep it cheap to abuse.
     limits: Mutex<HashMap<String, (Instant, u32)>>,
     per_minute: u32,
+    /// Pending invites by call uuid (see [`OFFER_TTL`]).
+    offers: Mutex<HashMap<String, StoredOffer>>,
 }
 
 impl PushRoutes {
@@ -340,6 +411,7 @@ impl PushRoutes {
             default_topic,
             limits: Mutex::new(HashMap::new()),
             per_minute: 30,
+            offers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -361,6 +433,7 @@ impl LocalRoute for PushRoutes {
             && matches!(
                 path,
                 "/_push/register" | "/_push/unregister" | "/_push/ring" | "/_push/cancel"
+                    | "/_push/pull" | "/_push/health"
             )
     }
 
@@ -480,6 +553,33 @@ impl PushRoutes {
                     let Some(apns) = self.apns.as_deref() else {
                         return json(StatusCode::SERVICE_UNAVAILABLE, "push not configured");
                     };
+                    // Keep the invite briefly so a woken callee whose iroh
+                    // envelope has not landed can pull it (`/_push/pull`).
+                    {
+                        let mut offers =
+                            self.offers.lock().unwrap_or_else(|error| error.into_inner());
+                        offers.retain(|_, offer| offer.expires > Instant::now());
+                        if action == "ring" {
+                            if let Some(invite) = value.get("invite").and_then(|v| v.as_str()) {
+                                if invite.len() > 16 * 1024 {
+                                    return json(StatusCode::BAD_REQUEST, "invite too large");
+                                }
+                                if !invite.is_empty() {
+                                    offers.insert(
+                                        call_uuid.to_owned(),
+                                        StoredOffer {
+                                            account: account.to_owned(),
+                                            caller_id: caller_id.to_owned(),
+                                            invite: invite.to_owned(),
+                                            expires: Instant::now() + OFFER_TTL,
+                                        },
+                                    );
+                                }
+                            }
+                        } else {
+                            offers.remove(call_uuid);
+                        }
+                    }
                     // Identifiers only: the device resolves the display name.
                     let payload = if action == "ring" {
                         serde_json::json!({
@@ -495,6 +595,17 @@ impl PushRoutes {
                     for (token, topic) in &entries {
                         match apns.send(token, topic, payload.clone()).await {
                             Ok(()) => sent += 1,
+                            Err(error) if HttpApns::is_stale_token(&error) => {
+                                // 410 or both hosts refuse: the registration
+                                // is dead. Prune it so a reinstall's fresh
+                                // token is not shadowed by corpses.
+                                tracing::warn!(
+                                    target: "idfon.edge.push",
+                                    %error,
+                                    "pruning stale token"
+                                );
+                                self.store.unregister(account, token);
+                            }
                             Err(error) => {
                                 tracing::warn!(target: "idfon.edge.push", %error, "apns send failed")
                             }
@@ -504,6 +615,56 @@ impl PushRoutes {
                         StatusCode::OK,
                         serde_json::json!({ "ok": true, "rung": sent }),
                     )
+                }
+                "health" => {
+                    // Tier-1 diagnostics (`docs/mcp-control.md`): the ref's
+                    // holder may see its wake-channel health. Counts only —
+                    // no token ever leaves this response.
+                    if !issued_by_ref {
+                        return json(StatusCode::FORBIDDEN, "ticket not issued by this ref");
+                    }
+                    let entries = self.store.entries(account);
+                    let topics: std::collections::BTreeSet<&str> =
+                        entries.iter().map(|(_, topic)| topic.as_str()).collect();
+                    let offers = self.offers.lock().unwrap_or_else(|error| error.into_inner());
+                    let pending = offers
+                        .values()
+                        .filter(|offer| offer.account == account && offer.expires > Instant::now())
+                        .count();
+                    json(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "registered_tokens": entries.len(),
+                            "topics": topics,
+                            "pending_offers": pending,
+                            "apns_configured": self.apns.is_some(),
+                        }),
+                    )
+                }
+                "pull" => {
+                    // The ref's holder fetches its own pending invite
+                    // (self-issued ticket, the registration rule).
+                    if !issued_by_ref {
+                        return json(StatusCode::FORBIDDEN, "ticket not issued by this ref");
+                    }
+                    let Some(call_uuid) = value.get("call_uuid").and_then(|v| v.as_str()) else {
+                        return json(StatusCode::BAD_REQUEST, "call_uuid required");
+                    };
+                    let offers = self.offers.lock().unwrap_or_else(|error| error.into_inner());
+                    match offers.get(call_uuid) {
+                        Some(offer)
+                            if offer.account == account && offer.expires > Instant::now() =>
+                        {
+                            json(
+                                StatusCode::OK,
+                                serde_json::json!({
+                                    "caller_id": offer.caller_id,
+                                    "invite": offer.invite,
+                                }),
+                            )
+                        }
+                        _ => json(StatusCode::NOT_FOUND, "no pending offer"),
+                    }
                 }
                 _ => json(StatusCode::NOT_FOUND, "unknown push action"),
             }
@@ -561,6 +722,187 @@ mod tests {
         assert_eq!(env, TokenEnv::Sandbox);
         assert_eq!(hosts.0, "https://api.push.apple.com");
         assert_eq!(TokenEnv::Production.other(), TokenEnv::Sandbox);
+    }
+
+    struct StaleApns;
+
+    impl ApnsSender for StaleApns {
+        fn send(
+            &self,
+            _token: &str,
+            _topic: &str,
+            _payload: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+            Box::pin(async {
+                Err(HttpApns::stale_token(&anyhow::anyhow!(
+                    "apns 410: {{\"reason\":\"Unregistered\"}}"
+                )))
+            })
+        }
+    }
+
+    #[test]
+    fn stale_tokens_are_pruned_from_the_registry() {
+        let refused = anyhow::anyhow!("apns 410: {{\"reason\":\"Unregistered\"}}");
+        assert!(HttpApns::unregistered_error(&refused));
+        assert!(HttpApns::unregistered_error(&anyhow::anyhow!(
+            "apns 410: {{\"reason\":\"ExpiredToken\"}}"
+        )));
+        assert!(HttpApns::is_stale_token(&HttpApns::stale_token(&refused)));
+        assert!(!HttpApns::is_stale_token(&refused));
+
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let (store, routes) = routes(Some(Arc::new(StaleApns)));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/register",
+            Some(&ticket),
+            serde_json::json!({ "voip_token": "token-dead" }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(store.entries(&account).len(), 1);
+
+        let (status, body) = post(
+            &routes,
+            &account,
+            "/_push/ring",
+            Some(&ticket),
+            serde_json::json!({
+                "call_uuid": "11111111-1111-1111-1111-111111111111",
+                "caller_id": "caller"
+            }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rung"], 0);
+        assert!(
+            store.entries(&account).is_empty(),
+            "a dead token must be pruned so a reinstall is not shadowed by it"
+        );
+    }
+
+    #[test]
+    fn jwt_signing_has_a_crypto_provider() {
+        // Regression 2026-11-10: with no crypto feature enabled, jsonwebtoken
+        // 11 panics at request time ("Could not automatically determine the
+        // process-level CryptoProvider") — every ring/cancel died mid-request
+        // while register kept working. Throwaway P-256 key, test-only.
+        let pem = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgZgYML+FLO4dLJSTQ\nye5a8jXgbgPkfbx7+dee1As/po6hRANCAASRY301eE6MRlKInb210n/Y8hDOvVoi\nXoaF6Ro+7sHLXL/7UOCGPDjRE8wNfXls8iOy82YaEigXHgfRKy6qyCl6\n-----END PRIVATE KEY-----";
+        let key = jsonwebtoken::EncodingKey::from_ec_pem(pem.as_bytes()).expect("test key parses");
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some("TESTKEY000".to_owned());
+        jsonwebtoken::encode(
+            &header,
+            &serde_json::json!({"iss": "test", "iat": 1}),
+            &key,
+        )
+        .expect("JWT signing must have a crypto provider");
+    }
+
+    #[test]
+    fn health_reports_counts_and_never_tokens() {
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let other_key = generate_identity();
+        let (_store, routes) = routes(Some(MockApns::new()));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/register",
+            Some(&ticket),
+            serde_json::json!({ "voip_token": "token-secret", "topic": "com.idfon.ios.voip" }),
+        );
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, body) = post(
+            &routes,
+            &account,
+            "/_push/health",
+            Some(&ticket),
+            serde_json::json!({}),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["registered_tokens"], 1);
+        assert_eq!(body["apns_configured"], true);
+        assert!(!body.to_string().contains("token-secret"), "health never leaks tokens");
+
+        let foreign = self_ticket(&other_key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/health",
+            Some(&foreign),
+            serde_json::json!({}),
+        );
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn pending_offer_survives_for_pull_and_dies_with_the_cancel() {
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let other_key = generate_identity();
+        let (_store, routes) = routes(Some(MockApns::new()));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+        let call = "22222222-2222-2222-2222-222222222222";
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/ring",
+            Some(&ticket),
+            serde_json::json!({
+                "call_uuid": call,
+                "caller_id": "caller",
+                "invite": "IDFON-LIVE/1\naction=start\nticket=t1"
+            }),
+        );
+        assert_eq!(status, StatusCode::OK);
+
+        // The callee pulls its own pending invite...
+        let (status, body) = post(
+            &routes,
+            &account,
+            "/_push/pull",
+            Some(&ticket),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["invite"], "IDFON-LIVE/1\naction=start\nticket=t1");
+
+        // ...but nobody else's.
+        let foreign = self_ticket(&other_key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/pull",
+            Some(&foreign),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // A cancel takes the offer with it.
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/cancel",
+            Some(&ticket),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/pull",
+            Some(&ticket),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     struct MockApns {

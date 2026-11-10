@@ -185,4 +185,58 @@ do {
     check(end.contains(.sendStop(peer: "caller", ticket: "T2")), "decline names the newest invite")
 }
 
+
+// C23: the quick answer signal (`call_started`) flips dialing -> connected at
+// once, and the return invite still carries the answer cue exactly once.
+do {
+    var life = CallLifecycle()
+    _ = effects(&life, .dial(peer: "peer"))
+    _ = effects(&life, .published(ticket: "T1"))
+    let fx = effects(&life, .remoteAnswered(peer: "peer"))
+    check(life.phase == .connected(peer: "peer"), "quick answer signal connects at once")
+    check(fx.contains(.changed), "the UI refreshes on the quick signal")
+    let leg = effects(&life, .invite(.init(peer: "peer", ticket: "T2", isReturn: true, watchOnly: false)))
+    check(leg.contains(.join(ticket: "T2", answersDial: true)), "the return leg still cues the answer")
+    let republish = effects(&life, .invite(.init(peer: "peer", ticket: "T3", isReturn: false, watchOnly: false)))
+    check(republish.contains(.join(ticket: "T3", answersDial: false)), "a re-publish joins without a second cue")
+}
+
+// C23: a stray answer signal changes nothing outside an outgoing dial.
+do {
+    var life = CallLifecycle()
+    _ = effects(&life, .remoteAnswered(peer: "peer"))
+    check(life.phase == .idle, "a stray answer signal leaves idle alone")
+    var ringing = CallLifecycle()
+    _ = effects(&ringing, .invite(.init(peer: "peer", ticket: "T1", isReturn: false, watchOnly: false)))
+    _ = effects(&ringing, .remoteAnswered(peer: "other"))
+    check({ if case .incoming = ringing.phase { return true }; return false }(),
+          "an answer signal does not disturb a ringing call")
+}
+
+
+// C21: glare — a fresh call from the very peer we are dialing. The lower
+// generation ticket wins on both sides, so exactly one call survives.
+do {
+    // Ours sorts higher (loses): drop our dial, ring theirs.
+    var life = CallLifecycle()
+    _ = effects(&life, .dial(peer: "peer"))
+    _ = effects(&life, .published(ticket: "T2"))
+    let fx = effects(&life, .invite(.init(peer: "peer", ticket: "T1", isReturn: false, watchOnly: false)))
+    check({ if case .incoming = life.phase { return true }; return false }(), "glare loser rings the winner's call")
+    check(fx.contains(.sendStop(peer: "peer", ticket: "T2")), "the loser stops its own dial")
+    check(fx.contains(.ring(peer: "peer")), "the winner's call rings here")
+}
+do {
+    // Ours sorts lower (wins): decline theirs, keep dialing; the marked
+    // return leg still joins (the flag is what separates it from glare).
+    var life = CallLifecycle()
+    _ = effects(&life, .dial(peer: "peer"))
+    _ = effects(&life, .published(ticket: "T1"))
+    let fx = effects(&life, .invite(.init(peer: "peer", ticket: "T2", isReturn: false, watchOnly: false)))
+    check({ if case .dialing = life.phase { return true }; return false }(), "glare winner keeps dialing")
+    check(fx.contains(.sendStop(peer: "peer", ticket: "T2")), "the winner declines the incoming")
+    let leg = effects(&life, .invite(.init(peer: "peer", ticket: "T3", isReturn: true, watchOnly: false)))
+    check(leg.contains(.join(ticket: "T3", answersDial: true)), "a marked return leg still joins")
+}
+
 print("ALL OK")

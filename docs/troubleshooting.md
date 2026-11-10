@@ -1060,3 +1060,31 @@ retry-path artifact (the invite itself is stored) and did not cause the missing
 prompt. See the `idempotency_key_conflict` entry above for the general pattern:
 message ids and idempotency keys must not be derived from state that resets on
 restart.
+
+## Every edge POST dies with "The network connection was lost" (curl works) (2026-11-10, FIXED)
+
+**Symptom.** The mac app's `/_push/ring` (and cancel) POSTs fail instantly
+with `ring failed: The network connection was lost.` (URLSession -1005) while
+`curl` to the same URL works and the *phone's* register POSTs to the same edge
+succeed. No `/_push/ring` line appears in the edge access log. The failure
+looks like client networking (proxy, ATS, local-network privacy — all checked,
+all innocent).
+
+**Root cause.** The edge's ring/cancel handler **panicked** in request context
+(`jsonwebtoken` 11 with no crypto feature: "Could not automatically determine
+the process-level CryptoProvider" at APNs JWT signing). A panic in a hyper
+service task aborts the connection with no response and **no access-log line**,
+so the server dies mid-request and the client reports a network error. Register
+never signs a JWT, which is why it kept working.
+
+**How it was found.** Point the caller at a raw logging HTTP sink
+(`python3 -m http.server`-style handler printing headers/body) — the request
+arrives perfectly formed and gets a 200, proving the client. Then read the
+edge's stderr: the panic is right there. Divide the request path at the
+server, not the network.
+
+**Fix.** `crates/idfon-edge/Cargo.toml`: `jsonwebtoken = { version = "11",
+features = ["rust_crypto"] }` + regression test
+`jwt_signing_has_a_crypto_provider`. General lesson: a panicking route handler
+kills the connection silently — check server stderr before blaming the client,
+and keep new handler code panic-free or guarded.
