@@ -99,6 +99,11 @@ uint8_t media_video_set_render_cb(void const *ctx,
     void (*cb)(void const *ctx, uint8_t const *data, size_t len, uint32_t width, uint32_t height, uint64_t pts_ms));
 void media_video_clear_render_cb(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
+// The live session's own EndpointAddr JSON: the far side merges it into the
+// ticket (media_live_subscribe_with_addrs) via the envelope's addr line — a
+// live ticket is endpoint-id-only and id-only dials race pkarr at call setup
+// (C20). "" when no live session is running. Free with rust_free_string.
+char *media_live_endpoint_addr(void);
 
 // Media file scope: subsequent media artifacts (video-frame.jpg, recordings,
 // received.wav) land under <root>/conversations/<scope>/ instead of

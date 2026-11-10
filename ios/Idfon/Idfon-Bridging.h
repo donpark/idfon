@@ -115,6 +115,11 @@ char *media_health_last_report(void);
 // Empty when no call is being sampled. Same shape as the last report.
 char *media_health_live_report(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
+// The live session's own EndpointAddr JSON: the far side merges it into the
+// ticket (media_live_subscribe_with_addrs) via the envelope's addr line — a
+// live ticket is endpoint-id-only and id-only dials race pkarr at call setup
+// (C20). "" when no live session is running. Free with rust_free_string.
+char *media_live_endpoint_addr(void);
 void media_video_push_frame(const void *data, uintptr_t len, uint32_t width, uint32_t height, uint64_t pts_ms); // BGRA frame -> live encoder
 void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)

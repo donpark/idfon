@@ -56,6 +56,10 @@ struct LiveInvite {
     let isReturn: Bool // holder response to an outgoing call
     let callMode: IncomingCallMode?
     let ticket: String
+    /// The publisher's live `EndpointAddr` JSON (base64 on the wire, C20):
+    /// the subscriber merges it into the ticket so the dial does not race
+    /// pkarr/DNS at call-setup time. Absent from old peers → discovery.
+    let addr: String?
 
     static func parse(_ text: String) -> LiveInvite? {
         guard text.hasPrefix("IDFON-LIVE/1\n") else { return nil }
@@ -81,17 +85,34 @@ struct LiveInvite {
             isCall: media == "video-call",
             isReturn: fields["return"] == "1",
             callMode: fields["call_mode"].flatMap(IncomingCallMode.init(rawValue:)),
-            ticket: fields["ticket"] ?? ""
+            ticket: fields["ticket"] ?? "",
+            addr: fields["addr"]
+                .flatMap { Data(base64Encoded: $0) }
+                .flatMap { String(data: $0, encoding: .utf8) }
         )
     }
 
     static func build(
-        action: String, ticket: String, call: Bool, callMode: IncomingCallMode = .bar
+        action: String, ticket: String, call: Bool, callMode: IncomingCallMode = .bar,
+        addr: String = ""
     ) -> String {
         let media = call ? "video-call" : "video"
         let mode = action == "start" && callMode.usesCallKit ? "\ncall_mode=call_kit" : ""
-        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(mode)"
+        let addrLine = addr.isEmpty ? "" : "\naddr=\(Data(addr.utf8).base64EncodedString())"
+        return "IDFON-LIVE/1\naction=\(action)\nmedia=\(media)\nticket=\(ticket)\(addrLine)\(mode)"
     }
+}
+
+/// The envelope `addr=` line: this session's live dial address (C20 — a live
+/// ticket is endpoint-id-only and a fresh endpoint's pkarr record is not
+/// resolvable yet at call-setup time, so id-only dials race discovery).
+func liveAddrLine() async -> String {
+    await Task.detached(priority: .userInitiated) {
+        guard let ptr = media_live_endpoint_addr() else { return "" }
+        defer { rust_free_string(ptr) }
+        let addr = String(cString: ptr)
+        return addr.isEmpty ? "" : "\naddr=\(Data(addr.utf8).base64EncodedString())"
+    }.value
 }
 
 /// 1:1 video-call state machine, mirroring the tested flow in
@@ -267,7 +288,12 @@ final class VideoCall: NSObject {
         // call's original ticket (CallLifecycle.generation).
         applySendState()
         do {
-            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true), fanout: true)
+            try await client.sendText(
+                to: peer,
+                LiveInvite.build(
+                    action: "start", ticket: ticket, call: true,
+                    addr: await ffiString { media_live_endpoint_addr() }),
+                fanout: true)
             idfonLog("idfon video: re-published tracks channels=\(channels)")
         } catch {
             idfonError("idfon video: re-publish invite failed: \(error)")
@@ -446,7 +472,8 @@ final class VideoCall: NSObject {
                 applySendState() // a toggle during `.calling` may predate the publish
                 let invite = LiveInvite.build(
                     action: "start", ticket: ticket, call: true,
-                    callMode: IncomingCallRouter.shared.mode(for: id))
+                    callMode: IncomingCallRouter.shared.mode(for: id),
+                    addr: await ffiString { media_live_endpoint_addr() })
                 try await client.sendText(to: id, invite, fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
@@ -534,7 +561,12 @@ final class VideoCall: NSObject {
         Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 applySendState()
                 idfonLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
-                try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true), fanout: true)
+                try await client.sendText(
+                    to: pending.peer,
+                    LiveInvite.build(
+                        action: "start", ticket: own, call: true,
+                        addr: await ffiString { media_live_endpoint_addr() }),
+                    fanout: true)
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
             }
@@ -573,6 +605,10 @@ final class VideoCall: NSObject {
 
     /// Handles a call-control message from `peerID`. Invite envelopes and
     /// call control texts are consumed (never shown as chat history).
+    /// Live `addr=` lines by ticket (C20): the publisher's own dial address,
+    /// preferred over the contact's stored (daemon-endpoint) addresses.
+    private var ticketAddrs: [String: String] = [:]
+
     func handleEnvelope(peer peerID: String, _ text: String) {
         if text == "call_started" { return } // informational only
         if text == "call_stopped" {
@@ -580,6 +616,9 @@ final class VideoCall: NSObject {
             return
         }
         guard let invite = LiveInvite.parse(text) else { return }
+        if let addr = invite.addr, !addr.isEmpty, !invite.ticket.isEmpty {
+            ticketAddrs[invite.ticket] = addr
+        }
         if invite.isStop {
             apply(.remoteStop(peer: peerID, ticket: invite.ticket.isEmpty ? nil : invite.ticket))
             return
@@ -615,7 +654,12 @@ final class VideoCall: NSObject {
             fail("video watch failed\(error.isEmpty ? "" : ": \(error)")")
             return
         }
-        let addrs = await videoPeerAddrs(activePeer)
+        let addrs: String
+        if let cached = ticketAddrs[ticket] {
+            addrs = cached
+        } else {
+            addrs = await videoPeerAddrs(activePeer)
+        }
         let subscribeResult = await Task.detached(priority: .userInitiated) {
             media_live_subscribe_with_addrs(ticket, addrs)
         }.value

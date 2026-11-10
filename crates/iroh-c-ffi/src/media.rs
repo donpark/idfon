@@ -765,6 +765,24 @@ pub fn media_live_last_error() -> char_p::Box {
         .try_into()
         .unwrap()
 }
+
+/// The live session's own dial address as `EndpointAddr` JSON — what the far
+/// side merges into the ticket (`media_live_subscribe_with_addrs`) via the
+/// envelope's `addr` line (C20). A live ticket is endpoint-id-only and a fresh
+/// endpoint's pkarr record is not resolvable yet at call-setup time, so
+/// id-only dials race discovery and time out; `Endpoint::addr()` carries the
+/// relay and current direct addresses, which dial without any lookup. Empty
+/// when no live session is running.
+#[ffi_export]
+pub fn media_live_endpoint_addr() -> char_p::Box {
+    let json = LIVE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|session| serde_json::to_string(&session.live.endpoint().addr()).ok())
+        .unwrap_or_default();
+    json.try_into().unwrap()
+}
 #[ffi_export]
 pub fn media_live_stop() {
     // Fold the per-call report before the counters reset (health §B2.2).
