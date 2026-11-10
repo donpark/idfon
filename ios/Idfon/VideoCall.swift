@@ -444,20 +444,19 @@ final class VideoCall: NSObject {
         Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 apply(.published(ticket: ticket))
                 applySendState() // a toggle during `.calling` may predate the publish
-                try await client.sendText(
-                    to: id,
-                    LiveInvite.build(
-                        action: "start", ticket: ticket, call: true,
-                        callMode: IncomingCallRouter.shared.mode(for: id)),
-                    fanout: true)
+                let invite = LiveInvite.build(
+                    action: "start", ticket: ticket, call: true,
+                    callMode: IncomingCallRouter.shared.mode(for: id))
+                try await client.sendText(to: id, invite, fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
                 // invite ticket's, so push and envelope share one call). Not
                 // gated on this device's presentation: a local Bar fallback
-                // must not silence a suspended callee.
+                // must not silence a suspended callee. The invite rides the
+                // ring so a woken callee can pull it if iroh delivery lags.
                 PushWake.shared.ring(
                     peer: id, callUUID: CallUUID.from(ticket: ticket).uuidString,
-                    hasVideo: true)
+                    hasVideo: true, invite: invite)
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }

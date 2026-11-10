@@ -83,6 +83,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
         return call.peerId == peerId
     }
 
+    /// Whether a call reported from a push is still live here: the pull path
+    /// (`PushWake.pullOffer`) routes its fetched invite only then, so a quick
+    /// cancel cannot resurrect the call.
+    func stillExpects(uuid: UUID) -> Bool {
+        guard let call = current, !call.outgoing else { return false }
+        return call.uuid == uuid
+    }
+
     /// Reports an incoming call from either the signed invite or PushKit.
     /// Both use the ticket-derived UUID, so whichever arrives second dedupes
     /// onto the same system call. A VoIP push that must be reported calls this

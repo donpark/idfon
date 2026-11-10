@@ -26,7 +26,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, Response, StatusCode, Uri};
@@ -372,6 +372,19 @@ impl PushStore {
     }
 }
 
+/// A ring's invite kept briefly so a push-woken callee can pull it when the
+/// iroh envelope has not landed yet (SIP push-bucket shape,
+/// docs/callkit-brittleness.md P1). In-memory and short-lived: the iroh
+/// invite path remains the durable one.
+const OFFER_TTL: Duration = Duration::from_secs(300);
+
+struct StoredOffer {
+    account: String,
+    caller_id: String,
+    invite: String,
+    expires: Instant,
+}
+
 /// The edge's `/_push/*` routes. `apns: None` answers 503 (push unconfigured)
 /// instead of silently accepting rings nobody receives.
 pub struct PushRoutes {
@@ -382,6 +395,8 @@ pub struct PushRoutes {
     /// Per-issuer fixed window: ringing is a wake channel, keep it cheap to abuse.
     limits: Mutex<HashMap<String, (Instant, u32)>>,
     per_minute: u32,
+    /// Pending invites by call uuid (see [`OFFER_TTL`]).
+    offers: Mutex<HashMap<String, StoredOffer>>,
 }
 
 impl PushRoutes {
@@ -396,6 +411,7 @@ impl PushRoutes {
             default_topic,
             limits: Mutex::new(HashMap::new()),
             per_minute: 30,
+            offers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -417,6 +433,7 @@ impl LocalRoute for PushRoutes {
             && matches!(
                 path,
                 "/_push/register" | "/_push/unregister" | "/_push/ring" | "/_push/cancel"
+                    | "/_push/pull"
             )
     }
 
@@ -536,6 +553,33 @@ impl PushRoutes {
                     let Some(apns) = self.apns.as_deref() else {
                         return json(StatusCode::SERVICE_UNAVAILABLE, "push not configured");
                     };
+                    // Keep the invite briefly so a woken callee whose iroh
+                    // envelope has not landed can pull it (`/_push/pull`).
+                    {
+                        let mut offers =
+                            self.offers.lock().unwrap_or_else(|error| error.into_inner());
+                        offers.retain(|_, offer| offer.expires > Instant::now());
+                        if action == "ring" {
+                            if let Some(invite) = value.get("invite").and_then(|v| v.as_str()) {
+                                if invite.len() > 16 * 1024 {
+                                    return json(StatusCode::BAD_REQUEST, "invite too large");
+                                }
+                                if !invite.is_empty() {
+                                    offers.insert(
+                                        call_uuid.to_owned(),
+                                        StoredOffer {
+                                            account: account.to_owned(),
+                                            caller_id: caller_id.to_owned(),
+                                            invite: invite.to_owned(),
+                                            expires: Instant::now() + OFFER_TTL,
+                                        },
+                                    );
+                                }
+                            }
+                        } else {
+                            offers.remove(call_uuid);
+                        }
+                    }
                     // Identifiers only: the device resolves the display name.
                     let payload = if action == "ring" {
                         serde_json::json!({
@@ -571,6 +615,31 @@ impl PushRoutes {
                         StatusCode::OK,
                         serde_json::json!({ "ok": true, "rung": sent }),
                     )
+                }
+                "pull" => {
+                    // The ref's holder fetches its own pending invite
+                    // (self-issued ticket, the registration rule).
+                    if !issued_by_ref {
+                        return json(StatusCode::FORBIDDEN, "ticket not issued by this ref");
+                    }
+                    let Some(call_uuid) = value.get("call_uuid").and_then(|v| v.as_str()) else {
+                        return json(StatusCode::BAD_REQUEST, "call_uuid required");
+                    };
+                    let offers = self.offers.lock().unwrap_or_else(|error| error.into_inner());
+                    match offers.get(call_uuid) {
+                        Some(offer)
+                            if offer.account == account && offer.expires > Instant::now() =>
+                        {
+                            json(
+                                StatusCode::OK,
+                                serde_json::json!({
+                                    "caller_id": offer.caller_id,
+                                    "invite": offer.invite,
+                                }),
+                            )
+                        }
+                        _ => json(StatusCode::NOT_FOUND, "no pending offer"),
+                    }
                 }
                 _ => json(StatusCode::NOT_FOUND, "unknown push action"),
             }
@@ -688,6 +757,69 @@ mod tests {
             store.entries(&account).is_empty(),
             "a dead token must be pruned so a reinstall is not shadowed by it"
         );
+    }
+
+    #[test]
+    fn pending_offer_survives_for_pull_and_dies_with_the_cancel() {
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let other_key = generate_identity();
+        let (_store, routes) = routes(Some(MockApns::new()));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+        let call = "22222222-2222-2222-2222-222222222222";
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/ring",
+            Some(&ticket),
+            serde_json::json!({
+                "call_uuid": call,
+                "caller_id": "caller",
+                "invite": "IDFON-LIVE/1\naction=start\nticket=t1"
+            }),
+        );
+        assert_eq!(status, StatusCode::OK);
+
+        // The callee pulls its own pending invite...
+        let (status, body) = post(
+            &routes,
+            &account,
+            "/_push/pull",
+            Some(&ticket),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["invite"], "IDFON-LIVE/1\naction=start\nticket=t1");
+
+        // ...but nobody else's.
+        let foreign = self_ticket(&other_key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/pull",
+            Some(&foreign),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // A cancel takes the offer with it.
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/cancel",
+            Some(&ticket),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/pull",
+            Some(&ticket),
+            serde_json::json!({ "call_uuid": call }),
+        );
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     struct MockApns {

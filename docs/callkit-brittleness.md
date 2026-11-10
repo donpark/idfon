@@ -363,6 +363,16 @@ call survives a stale roster, endpoint rotation, and slow media startup
 parallel with one explicit acceptance winning; transport acks never stop the
 account-level ring.
 
+**Landed 2026-11-09 (offer slice):** the ring carries the invite (`invite`
+field), the edge keeps it ~5 min under the call uuid, and a push-woken callee
+pulls it via `/_push/pull` when the iroh envelope has not landed — routed
+through the ordinary envelope path, so same-UUID dedupe and the
+pending-answer machinery are unchanged; `CallKitController.stillExpects`
+drops a resurrected offer after a quick cancel. The fan-out semantics from
+C17 (all devices, generation-ticket correlation) are in the same commit
+lineage. Remaining in P1: the call-attempt UUID decoupled from the media
+ticket (ring before publish) — gated on the P0 publisher-stage evidence.
+
 This is a protocol/state-machine change. It must preserve: same-UUID dedupe between
 PushKit and iroh, PushKit's report-before-completion rule, answer-before-offer,
 quick cancel, stale-stop isolation, retry/idempotency, and multi-device ring-over.

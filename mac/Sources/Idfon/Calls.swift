@@ -233,15 +233,15 @@ final class LiveCall {
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
-                try await client.sendText(
-                    to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))",
-                    fanout: true
-                )
+                let invite = "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
+                try await client.sendText(to: peerId, invite, fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
                 // invite ticket's, so push and envelope share one system call.
-                await CallRing.ring(peer: peerId, inviteTicket: ticket, hasVideo: false)
+                // The invite rides the ring so a woken callee can pull it if
+                // iroh delivery lags.
+                await CallRing.ring(
+                    peer: peerId, inviteTicket: ticket, hasVideo: false, invite: invite)
             } catch {
                 let ns = error as NSError
                 fail("Dial failed: \(error.localizedDescription) [\(ns.domain) code=\(ns.code)]")
@@ -950,11 +950,14 @@ final class VideoCall {
                 publishedChannels = AudioMeter.captureChannelsForCall()
                 apply(.published(ticket: ticket))
                 applySendState()
-                try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true), fanout: true)
+                let invite = LiveInvite.build(action: "start", ticket: ticket, call: true)
+                try await client.sendText(to: id, invite, fanout: true)
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
-                // invite ticket's, so push and envelope share one call).
-                await CallRing.ring(peer: id, inviteTicket: ticket, hasVideo: true)
+                // invite ticket's, so push and envelope share one call). The
+                // invite rides the ring so a woken callee can pull it if iroh
+                // delivery lags.
+                await CallRing.ring(peer: id, inviteTicket: ticket, hasVideo: true, invite: invite)
                 await waitForReturnInvite(peer: id)
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")

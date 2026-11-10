@@ -476,20 +476,21 @@ final class LiveCall {
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 _ = try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
+                let invite = "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))\(callModeLine)"
                 let inviteOperation = try await client.sendText(
-                    to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))\(callModeLine)",
-                    fanout: true
+                    to: peerId, invite, fanout: true
                 )
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
                 // invite ticket's, so the callee's push report and the
                 // envelope land on the same system call. Not gated on this
                 // device's presentation: a local Bar fallback must not silence
-                // a suspended callee (the ring is about their device).
+                // a suspended callee (the ring is about their device). The
+                // invite rides the ring so a woken callee can pull it if iroh
+                // delivery lags.
                 PushWake.shared.ring(
                     peer: peerId, callUUID: CallUUID.from(ticket: ticket).uuidString,
-                    hasVideo: false)
+                    hasVideo: false, invite: invite)
                 // Dial watchdog: the invite was accepted for delivery, but if the
                 // return leg never lands (peer offline, relay flap, network
                 // transition), do not hang in .calling forever. Delivery is
