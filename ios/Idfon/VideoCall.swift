@@ -325,13 +325,15 @@ final class VideoCall: NSObject {
     }
 
     private func dialNow(_ peerRef: String, audio: Bool, video: Bool, cameraOn: Bool) {
-        let epoch = life.epoch
         audioAvailable = true
         videoAvailable = true
         audioEnabled = audio
         videoEnabled = video && cameraOn
         callPeer = peerRef
         apply(.dial(peer: peerRef))
+        // Captured after the dial opens the call: `.dial` bumps the epoch, so
+        // reading it first made every outgoing iOS call fail its own guard.
+        let epoch = life.epoch
         // The cue rides the shared playback bus (AudioIO): start the session
         // first or the tone is dropped before the call arms it.
         activateAudioSession()

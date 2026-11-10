@@ -24,6 +24,21 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     /// BadDeviceToken).
     static let topic = "\(Bundle.main.bundleIdentifier ?? "com.idfon.ios").voip"
 
+    /// The APNs environment this build's token belongs to: the embedded
+    /// provisioning profile decides it (`development` → sandbox), and
+    /// TestFlight/App Store builds carry no profile → production. Declared at
+    /// registration so the edge pushes to the right host first instead of
+    /// learning it from a refused send (a dev build beside a production fleet).
+    static let apnsEnvironment: String = {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .isoLatin1),
+              let key = text.range(of: "<key>aps-environment</key>")
+        else { return "production" }
+        return text[key.upperBound...].prefix(200).contains("<string>development</string>")
+            ? "sandbox" : "production"
+    }()
+
     private static let tokenKey = "idfon.push.token"
 
     private let client = IdfonClient()
@@ -41,6 +56,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     func start() {
         guard registry == nil else { return }
         lastToken = UserDefaults.standard.string(forKey: Self.tokenKey)
+        idfonLog("idfon push: register env=\(Self.apnsEnvironment)")
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
@@ -212,8 +228,9 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         for account in await accountRefs(issuer: statement.issuer) {
             let url = EdgeClient.resourceURL(baseURL: base, account: account, path: "/_push/register")
             let ok = await postJSON(
-                url: url, ticket: statement.raw, body: ["voip_token": token, "topic": Self.topic])
-            Diag.log("push.register", ["account": account, "ok": ok])
+                url: url, ticket: statement.raw,
+                body: ["voip_token": token, "topic": Self.topic, "env": Self.apnsEnvironment])
+            Diag.log("push.register", ["account": account, "ok": ok, "env": Self.apnsEnvironment])
             if ok { claimed += 1 }
         }
         Diag.flush() // registration is a wake-saga fact: ship it now

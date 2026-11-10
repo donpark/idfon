@@ -4,8 +4,12 @@
 //! they share its TLS/origin and address like any edge resource
 //! (`https://<ref>.idfon.net/_push/ring` or `https://idfon.net/<ref>/_push/ring`):
 //!
-//! * `POST /_push/register` `{"voip_token": "…"}` / `POST /_push/unregister` —
-//!   a device claims (or releases) the ref's wake channel. Auth: a capability
+//! * `POST /_push/register` `{"voip_token": "…", "topic": "…", "env":
+//!   "sandbox"|"production"}` / `POST /_push/unregister` — a device claims
+//!   (or releases) the ref's wake channel. `env` is the environment the app's
+//!   own entitlements put its token in; optional, so an older app keeps
+//!   working (absent = the sender learns it by trying the configured host and
+//!   flipping once). Auth: a capability
 //!   ticket **issued by the ref** (self-issued through the daemon's
 //!   `capability.ticket` RPC), so only the identity's holder can claim it.
 //! * `POST /_push/ring` `{"call_uuid", "caller_id", "has_video"}` /
@@ -40,10 +44,13 @@ const PUSH_EXPIRATION_SECS: u64 = 30;
 
 /// Ring fan-out boundary: Apple's APNs in production, a recorder in tests.
 pub trait ApnsSender: Send + Sync + 'static {
+    /// `env` is the environment the registering app declared for its token;
+    /// `None` (an older app) falls back to learning it by trying.
     fn send(
         &self,
         token: &str,
         topic: &str,
+        env: Option<TokenEnv>,
         payload: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
 }
@@ -89,8 +96,9 @@ pub struct HttpApns {
 }
 
 /// The APNs environment a device token belongs to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TokenEnv {
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenEnv {
     Production,
     Sandbox,
 }
@@ -238,6 +246,7 @@ impl ApnsSender for HttpApns {
         &self,
         token: &str,
         topic: &str,
+        declared: Option<TokenEnv>,
         payload: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
         let client = self.client.clone();
@@ -249,7 +258,10 @@ impl ApnsSender for HttpApns {
             .unwrap_or_else(|error| error.into_inner())
             .get(token)
             .copied();
-        let env = learned.unwrap_or(self.default_env);
+        // What the app said at registration beats what the edge learned: a
+        // reinstall changes the entitlement, and a stale learned verdict
+        // costs a refused send on the next ring.
+        let env = declared.or(learned).unwrap_or(self.default_env);
         let token = token.to_owned();
         let topic = topic.to_owned();
         let authorization = self.bearer();
@@ -305,13 +317,48 @@ impl ApnsSender for HttpApns {
     }
 }
 
-/// Registered PushKit tokens per ref — `token → APNs topic` — persisted as
+/// One registered device: its APNs topic and, when the app declares it, the
+/// environment it minted its token in (C24: a dev-signed build's PushKit
+/// token only delivers through the sandbox host). `env: None` means an app
+/// that predates the field — the sender learns the environment by trying.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TokenRecord {
+    pub topic: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<TokenEnv>,
+}
+
+impl<'de> serde::Deserialize<'de> for TokenRecord {
+    // Pre-`env` edges wrote `token → "topic"`; read both shapes so an
+    // upgrade does not drop the wake registry.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Legacy(String),
+            Record {
+                topic: String,
+                #[serde(default)]
+                env: Option<TokenEnv>,
+            },
+        }
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Legacy(topic) => TokenRecord { topic, env: None },
+            Stored::Record { topic, env } => TokenRecord { topic, env },
+        })
+    }
+}
+
+/// Registered PushKit tokens per ref — `token → [`TokenRecord`]` — persisted as
 /// JSON so an edge restart does not drop the wake channel. The topic travels
 /// with the token because tokens are per app bundle (`com.idfon.ios.voip`,
 /// `com.idfon.mac.voip`): one team-level APNs key signs for both.
 pub struct PushStore {
     path: PathBuf,
-    tokens: Mutex<HashMap<String, HashMap<String, String>>>,
+    tokens: Mutex<HashMap<String, HashMap<String, TokenRecord>>>,
 }
 
 impl PushStore {
@@ -326,12 +373,15 @@ impl PushStore {
         }
     }
 
-    pub fn register(&self, account: &str, token: &str, topic: &str) {
+    pub fn register(&self, account: &str, token: &str, topic: &str, env: Option<TokenEnv>) {
         let mut tokens = self.lock();
-        tokens
-            .entry(account.to_owned())
-            .or_default()
-            .insert(token.to_owned(), topic.to_owned());
+        tokens.entry(account.to_owned()).or_default().insert(
+            token.to_owned(),
+            TokenRecord {
+                topic: topic.to_owned(),
+                env,
+            },
+        );
         self.persist(&tokens);
     }
 
@@ -346,24 +396,24 @@ impl PushStore {
         }
     }
 
-    /// `(token, topic)` pairs registered for the ref.
-    pub fn entries(&self, account: &str) -> Vec<(String, String)> {
+    /// `(token, record)` pairs registered for the ref.
+    pub fn entries(&self, account: &str) -> Vec<(String, TokenRecord)> {
         self.lock()
             .get(account)
             .map(|map| {
                 map.iter()
-                    .map(|(token, topic)| (token.clone(), topic.clone()))
+                    .map(|(token, record)| (token.clone(), record.clone()))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, HashMap<String, String>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, HashMap<String, TokenRecord>>> {
         self.tokens.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     /// Best-effort atomic write: a torn file must not lose the registry.
-    fn persist(&self, tokens: &HashMap<String, HashMap<String, String>>) {
+    fn persist(&self, tokens: &HashMap<String, HashMap<String, TokenRecord>>) {
         let Ok(bytes) = serde_json::to_vec(tokens) else { return };
         let tmp = self.path.with_extension("tmp");
         if std::fs::write(&tmp, &bytes).is_ok() {
@@ -514,7 +564,14 @@ impl PushRoutes {
                                 _ => return json(StatusCode::BAD_REQUEST, "topic invalid"),
                             },
                         };
-                        self.store.register(account, token, &topic);
+                        let env = match value.get("env") {
+                            None | Some(serde_json::Value::Null) => None,
+                            Some(value) => match serde_json::from_value::<TokenEnv>(value.clone()) {
+                                Ok(env) => Some(env),
+                                Err(_) => return json(StatusCode::BAD_REQUEST, "env invalid"),
+                            },
+                        };
+                        self.store.register(account, token, &topic, env);
                     } else {
                         self.store.unregister(account, token);
                     }
@@ -592,8 +649,8 @@ impl PushRoutes {
                     };
                     let entries = self.store.entries(account);
                     let mut sent = 0;
-                    for (token, topic) in &entries {
-                        match apns.send(token, topic, payload.clone()).await {
+                    for (token, record) in &entries {
+                        match apns.send(token, &record.topic, record.env, payload.clone()).await {
                             Ok(()) => sent += 1,
                             Err(error) if HttpApns::is_stale_token(&error) => {
                                 // 410 or both hosts refuse: the registration
@@ -625,7 +682,7 @@ impl PushRoutes {
                     }
                     let entries = self.store.entries(account);
                     let topics: std::collections::BTreeSet<&str> =
-                        entries.iter().map(|(_, topic)| topic.as_str()).collect();
+                        entries.iter().map(|(_, record)| record.topic.as_str()).collect();
                     let offers = self.offers.lock().unwrap_or_else(|error| error.into_inner());
                     let pending = offers
                         .values()
@@ -731,6 +788,7 @@ mod tests {
             &self,
             _token: &str,
             _topic: &str,
+            _env: Option<TokenEnv>,
             _payload: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
             Box::pin(async {
@@ -782,6 +840,48 @@ mod tests {
             store.entries(&account).is_empty(),
             "a dead token must be pruned so a reinstall is not shadowed by it"
         );
+    }
+
+    #[test]
+    fn registration_carries_the_apns_environment() {
+        let key = generate_identity();
+        let account = idfon_core::peer_id(&key);
+        let (store, routes) = routes(Some(MockApns::new()));
+        let ticket = self_ticket(&key, None, Some("2999-01-01T00:00:00Z".to_owned()));
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/register",
+            Some(&ticket),
+            serde_json::json!({ "voip_token": "token-sandbox", "env": "sandbox" }),
+        );
+        assert_eq!(status, StatusCode::OK);
+        let entries = store.entries(&account);
+        let record = entries.iter().find(|(token, _)| token == "token-sandbox").unwrap();
+        assert_eq!(record.1.env, Some(TokenEnv::Sandbox));
+
+        let (status, _) = post(
+            &routes,
+            &account,
+            "/_push/register",
+            Some(&ticket),
+            serde_json::json!({ "voip_token": "token-bad", "env": "staging" }),
+        );
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // A pre-`env` edge wrote `token → "topic"`; an upgrade must still read it.
+        let path = std::env::temp_dir().join(format!(
+            "idfon-push-legacy-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"acct":{"legacy":"com.idfon.ios.voip"}}"#).unwrap();
+        let legacy = PushStore::load(path.clone());
+        let entries = legacy.entries("acct");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1.topic, "com.idfon.ios.voip");
+        assert_eq!(entries[0].1.env, None);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -922,6 +1022,7 @@ mod tests {
             &self,
             token: &str,
             topic: &str,
+            _env: Option<TokenEnv>,
             payload: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
             self.sent
