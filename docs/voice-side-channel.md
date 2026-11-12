@@ -587,8 +587,13 @@ Contact Detail picks per contact. mac needs macOS 14 (FluidAudio).
 
 **Defaults follow the build.** Reply speech is Phonon whenever the build
 carries it (the streaming mouth the duplex loop needs) and Apple otherwise.
-Recognition is Nemotron Streaming (iOS 18+/macOS 15+); Apple's recognizers
-cover other languages and older OS versions, and follow the system locale
+Recognition is the English Nemotron Streaming bundle
+(`nemotron-speech-streaming-en-0.6b-coreml/560ms`, 597 MiB) by default;
+`IDFON_ASR_MULTILINGUAL=1` builds select the licence-matched 3.5 multilingual
+bundle's pruned `latin/560ms` tier (583 MiB) driven as English (`en-US`)
+instead — see `voice-tyger-ondevice.md`. iOS 18+/macOS 15+ — and
+Apple's recognizers cover other languages and older OS versions, and follow the
+system locale
 (`SpeechVoice.callLanguage`, `Locale.current`). The two halves fall back
 independently: recognition, reply speech, or both can be on-device. A persisted
 explicit choice still wins.

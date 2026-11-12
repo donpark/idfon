@@ -2,12 +2,21 @@ import AVFAudio
 import Foundation
 import FluidAudio
 
-/// Nemotron Speech Streaming 0.6B recognizer — the call ASR (2026-10-25
+/// Nemotron 3.5 streaming 0.6B recognizer — the call ASR (2026-10-25
 /// ruling: the duplex loop needs streaming input, which Parakeet Redux lacks;
-/// "swap, not add"). FluidAudio's `StreamingNemotronAsrManager` runs the true
-/// streaming pipeline (encoder cache states, native mel front-end); mic
-/// buffers arrive through the single microphone source (`AudioIO`) and text
-/// leaves as partials (iOS port of `mac/Sources/Idfon/NemotronStreamingAsr.swift`).
+/// "swap, not add"). FluidAudio's streaming Nemotron manager runs the
+/// true streaming pipeline (encoder cache states, native mel
+/// front-end); mic buffers arrive through the single microphone source
+/// (`AudioIO`) and text leaves as partials (iOS port of
+/// `mac/Sources/Idfon/NemotronStreamingAsr.swift`).
+///
+/// Runs one of two bundles, picked at build time: the English ship
+/// (`nemotron-speech-streaming-en-0.6b-coreml/560ms`, 597 MiB) **by default**,
+/// or — with `IDFON_ASR_MULTILINGUAL=1` — the licence-matched 3.5 multilingual
+/// bundle's pruned `latin/560ms` tier (583 MiB), driven as English. The
+/// multilingual bundle is OpenMDW-1.1 like the TYGER 3.5 tiers we ship; the
+/// English bundle is NVIDIA's Open Model License (mixing grants). See the
+/// bundle swap measurement in `docs/voice-tyger-ondevice.md`.
 ///
 /// Turn boundaries belong to the segmenter, but the manager's transcript
 /// accumulates across the whole stream — so every commit (and every barge
@@ -17,13 +26,28 @@ import FluidAudio
 final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     let name = "nemotron-streaming"
 
-    /// The 560 ms chunk tier: the lowest-latency variant of the three shipped
-    /// (`FluidInference/nemotron-speech-streaming-en-0.6b-coreml/560ms`).
+    /// Two bundles, one build:
+    /// - default: the English `nemotron-speech-streaming-en-0.6b-coreml/560ms`
+    ///   ship (597 MiB, NVIDIA Open Model License).
+    /// - `IDFON_ASR_MULTILINGUAL=1`: the 3.5 multilingual bundle's pruned
+    ///   `latin/560ms` tier (583 MiB, OpenMDW-1.1 like the TYGER tiers),
+    ///   driven as English. The full-vocab `multilingual/560ms` tier would
+    ///   cost +36 MiB.
+    #if NEMOTRON_MULTILINGUAL
+    static let repo = Repo.nemotronMultilingual
+    static let languageCode = "en-US"
+    static var variantSubdirectory: String { "latin/\(chunkMs)ms" }
+    /// Both managers expose the same load/process/reset contract.
+    private typealias Manager = StreamingNemotronMultilingualAsrManager
+    #else
     static let repo = Repo.nemotronStreaming560
+    private typealias Manager = StreamingNemotronAsrManager
+    #endif
+    static let chunkMs = 560
 
     private let gateLock = NSLock()
     private var gated = false
-    private var manager: StreamingNemotronAsrManager?
+    private var manager: Manager?
     private var feedTask: Task<Void, Never>?
     private var bufferContinuation: AsyncStream<(Int, AVAudioPCMBuffer)>.Continuation?
     /// Bumped at every utterance commit: the feed drops buffers captured
@@ -50,12 +74,26 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
 
     func prepare() async { await Self.warmCache() }
 
-    /// `Application Support/FluidAudio/Models/<nemotron repo folder>` — the
-    /// FluidAudio models base the other engines download into; exactly where
-    /// `ModelHub.download` lands the files (it appends the repo's folder name
-    /// under `to:` itself).
+    /// `Application Support/FluidAudio/Models/<repo folder>/latin/<tier>ms`
+    /// — exactly where `downloadVariant` lands the files.
     static func modelDirectory() -> URL {
-        modelsBase.appendingPathComponent(repo.folderName)
+        let base = modelsBase.appendingPathComponent(repo.folderName)
+        #if NEMOTRON_MULTILINGUAL
+        return base.appendingPathComponent(variantSubdirectory, isDirectory: true)
+        #else
+        return base
+        #endif
+    }
+
+    /// Fetch the selected bundle: the English `560ms` dir whole, or only the
+    /// `latin/<tier>ms` variant (`.mlmodelc`, no `.mlpackage` sources).
+    static func download(chunkMs: Int) async throws {
+        #if NEMOTRON_MULTILINGUAL
+        _ = try await StreamingNemotronMultilingualAsrManager.downloadVariant(
+            languageCode: languageCode, chunkMs: chunkMs, to: modelsBase)
+        #else
+        try await ModelHub.download(repo, to: modelsBase)
+        #endif
     }
 
     private static var modelsBase: URL {
@@ -74,7 +112,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
                 }
                 Automation.mark("voice: nemotron prewarming")
                 do {
-                    try await ModelHub.download(repo, to: modelsBase)
+                    try await download(chunkMs: chunkMs)
                     Automation.mark("voice: nemotron prewarmed")
                 } catch {
                     Automation.mark("voice: nemotron prewarm failed \(error.localizedDescription)")
@@ -98,10 +136,13 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
         // Downloads are the approval gate's job (2026-10-27 rule): a call
         // loads from disk and fails clearly if the models are not there.
         if VoiceModelGate.approved {
-            try await ModelHub.download(Self.repo, to: Self.modelsBase)
+            try await Self.download(chunkMs: Self.chunkMs)
         }
-        let manager = StreamingNemotronAsrManager()
+        let manager = Manager()
         try await manager.loadModels(from: Self.modelDirectory())
+        #if NEMOTRON_MULTILINGUAL
+        await manager.setLanguage(Self.languageCode)
+        #endif
         await manager.setPartialCallback { [weak self] text in
             // The manager calls back from its actor; the session marshals to
             // the main thread itself, like every other ASR backend.
@@ -154,7 +195,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     /// without bound.
     /// no guard here — called once from `start` (before `started` is set);
     /// the epoch fence and `stop()` own the lifecycle.
-    private func startFeed(_ manager: StreamingNemotronAsrManager) {
+    private func startFeed(_ manager: Manager) {
         let (stream, continuation) = AsyncStream<(Int, AVAudioPCMBuffer)>.makeStream(
             bufferingPolicy: .bufferingNewest(64)
         )

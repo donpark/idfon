@@ -18,6 +18,9 @@ ROOT="$(cd .. && pwd)"
 # Package.swift (which adds the ptts package) — keep the two in sync.
 extra=()
 if [ "${IDFON_TTS_PHONON:-1}" != "0" ]; then extra=(-Xswiftc -DPHONON_TTS); fi
+# ASR bundle: the English ship by default; IDFON_ASR_MULTILINGUAL=1 selects the
+# 3.5 multilingual bundle's pruned latin/560ms tier instead.
+if [ "${IDFON_ASR_MULTILINGUAL:-0}" != "0" ]; then extra+=(-Xswiftc -DNEMOTRON_MULTILINGUAL); fi
 swift build -c release ${extra[@]+"${extra[@]}"}
 
 APP=build/Idfon.app

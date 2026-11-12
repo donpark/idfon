@@ -23,8 +23,12 @@ fi
 if [ "$build" = 1 ]; then
   "$ios_dir/build-deps.sh"
   extra=()
-  if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then
-    extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PHONON_TTS')
+  conds=""
+  if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then conds="PHONON_TTS"; fi
+  # ASR bundle: the English ship by default; =1 selects the 3.5 latin/560ms tier.
+  if [ "${IDFON_ASR_MULTILINGUAL:-0}" != "0" ]; then conds="${conds:+$conds }NEMOTRON_MULTILINGUAL"; fi
+  if [ -n "$conds" ]; then
+    extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS="\$(inherited) $conds")
   fi
   xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon -destination 'generic/platform=iOS' ARCHS=arm64 -derivedDataPath "$ios_dir/.derived" -configuration Release ${extra[@]+"${extra[@]}"} build >/dev/null
 fi

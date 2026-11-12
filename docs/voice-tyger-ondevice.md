@@ -1430,13 +1430,25 @@ and only the 3.5 multilingual bundle carries the same grant as the tiers. The En
 bundle that ships today declares NVIDIA's Open Model License (see
 `tyger-models/LICENSE.md`). Same 560 ms tier, same architecture — different decoder
 files, so the transcripts are a different product until measured. This is that
-measurement; no app, threshold, model or fork change.
+measurement. **The 3.5 bundle is a build-time option, not the default:**
+`IDFON_ASR_MULTILINGUAL=1` makes `NemotronStreamingAsr` (both apps) download
+`latin/560ms` and drive it as `en-US`; the default build keeps the English
+bundle. `latin/560ms` is the vocab-pruned Latin ship (**583 MiB**, 2,828
+tokens) — smaller than the English bundle (597 MiB) and 50 MiB under the
+full-vocab `multilingual/560ms` tier this section measured (633 MiB). The
+measurement below is on the full-vocab tier; the pruned decoder has not been
+re-measured. The option exists so a multilingual ASR is already wired when the
+turn model gains multilingual support: the ASR has to be multilingual before
+the decision layer can be, and this switch makes that a build flag (plus a
+decoder check) rather than a re-plumb. Tyger itself stays English-only
+(`tyger-models` model card: "not for non-English speech") until it is replaced
+or refit.
 
-| | today | after the swap |
+| | today (default) | with `IDFON_ASR_MULTILINGUAL=1` |
 |---|---|---|
-| bundle | `FluidInference/nemotron-speech-streaming-en-0.6b-coreml/560ms` | `FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML/multilingual/560ms` |
+| bundle | `FluidInference/nemotron-speech-streaming-en-0.6b-coreml/560ms` | `FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML/latin/560ms` |
 | licence | NVIDIA Open Model License | OpenMDW-1.1 |
-| on disk | 597 MB (installed) | 633 MiB / 664 MB (download) |
+| on disk | 597 MiB (597 MB) | 583 MiB (611 MB) |
 | manager | `StreamingNemotronAsrManager` | `StreamingNemotronMultilingualAsrManager` |
 | language | none (no prompt input) | `setLanguage("en-US")` → `prompt_id` 0; also run with `auto` → 101 |
 | vocab | 1,024 | 13,087 |

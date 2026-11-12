@@ -94,7 +94,11 @@ enum TurnPrefixProbe {
 
         // Beside the prefix through FluidAudio's public manager path (the same
         // call the shipping ASR makes), not a private shortcut.
+        #if NEMOTRON_MULTILINGUAL
+        var asr: StreamingNemotronMultilingualAsrManager?
+        #else
         var asr: StreamingNemotronAsrManager?
+        #endif
         var asrStatus: [String: Any] = ["loaded": false]
         if #available(iOS 18.0, *) {
             let dir = NemotronStreamingAsr.modelDirectory()
@@ -102,9 +106,16 @@ enum TurnPrefixProbe {
             if files.isEmpty {
                 asrStatus["error"] = "no ASR files at \(dir.path)"
             } else {
+                #if NEMOTRON_MULTILINGUAL
+                let manager = StreamingNemotronMultilingualAsrManager()
+                #else
                 let manager = StreamingNemotronAsrManager()
+                #endif
                 do {
                     try await manager.loadModels(from: dir)
+                    #if NEMOTRON_MULTILINGUAL
+                    await manager.setLanguage(NemotronStreamingAsr.languageCode)
+                    #endif
                     asr = manager
                     asrStatus = ["loaded": true, "directory": dir.path]
                 } catch {
