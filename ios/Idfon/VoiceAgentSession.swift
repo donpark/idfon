@@ -33,6 +33,8 @@ final class VoiceAgentSession: NSObject {
     /// Recognizer backend; resolved per contact at `start`.
     private var asrBackend = SpeechEngines.asrBackend
     private let segmenter = VoicePromptSegmenter()
+    /// Feeds the segmenter's quiet clock (RealtimeVAD's 10 ms rule).
+    private let quietTap = QuietClockTap()
     private var asr: (any AsrEngine)?
 
     private(set) var isActive = false
@@ -160,6 +162,8 @@ final class VoiceAgentSession: NSObject {
         asrReference = ProcessInfo.processInfo.environment["IDFON_ASR_REF"] ?? Self.launchString("-asrref")
         configureSession()
         SpeechEngines.prewarm()
+        quietTap.session = self
+        AudioIO.shared.addCaptureObserver(quietTap)
         segmenter.onPartial = { [weak self] text in
             guard let self, !self.bargeInArmed else { return }
             self.setState(.listening(text))
@@ -635,6 +639,8 @@ final class VoiceAgentSession: NSObject {
         stopRequested = true
         DirectorRuntime.shared.endCall()
         segmenter.stop()
+        AudioIO.shared.removeCaptureObserver(quietTap)
+        quietTap.session = nil
         TurnReplay.shared.disarmCall()
         turnShadow?.stop()
         turnShadow = nil
@@ -704,6 +710,11 @@ final class VoiceAgentSession: NSObject {
         micMuted = !enabled
         guard let asr else { return }
         if enabled { asr.resume() } else { asr.pause() }
+    }
+
+    /// The quiet clock's mic feed (main thread; the segmenter gates it).
+    fileprivate func feedQuietClock(_ samples: [Float], sampleRate: Double) {
+        segmenter.feedAudio(samples, sampleRate: sampleRate)
     }
 
     // MARK: - analyzer lifecycle
@@ -1351,6 +1362,22 @@ extension VoiceAgentSession: @preconcurrency ChatStoreObserver {
             }
             Task { @MainActor [weak self] in await self?.cancelReactions() }
             return
+        }
+    }
+}
+
+/// The one mic source, forwarded to the segmenter's quiet clock. The clock's
+/// early end is off by default (see `VoicePromptSegmenter`); otherwise it only
+/// logs.
+private final class QuietClockTap: AudioCaptureObserver {
+    weak var session: VoiceAgentSession?
+
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard let channels = buffer.floatChannelData else { return }
+        let samples = Array(UnsafeBufferPointer(start: channels[0], count: Int(buffer.frameLength)))
+        let rate = buffer.format.sampleRate
+        DispatchQueue.main.async { [weak session] in
+            session?.feedQuietClock(samples, sampleRate: rate)
         }
     }
 }
