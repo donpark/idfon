@@ -97,6 +97,12 @@ endpoint clips. The rule is not yet a safe turn end on real audio; the
 text-gap path stays. Reproduce with `ios/Checks/QuietClockReplay` or watch
 `long_resumed` on a live call.
 
+Those false positives are not backchannel moments: of the 12 clock-end pauses
+in the 8 non-endpoint clips, 9 have no speech on the other channel during the
+pause, and the 3 that do are 0.75–1.8 s overlaps (turn alternation), not short
+acknowledgements. So `pause` is not a usable proxy for the backchannel head as
+measured here — it is ordinary mid-turn pausing.
+
 ```sh
 scripts/voice-latency-report.sh call.log    # captured marker log
 … | scripts/voice-latency-report.sh         # stdin (devicectl --console output)
