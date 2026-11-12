@@ -407,12 +407,30 @@ final class CallKitController: NSObject, CXProviderDelegate {
             current = call
             provider.reportOutgoingCall(with: call.uuid, connectedAt: Date())
         case .idle:
-            guard let call = current, call.owner == owner else { return }
+            guard let call = current else { return }
+            // The machine that actually held the call must be able to end the
+            // system call even when the presented owner disagrees — a push's
+            // `has_video` can differ from the envelope's media line (#51).
+            // Only the idle of an unrelated machine leaves it alone.
+            if call.owner != owner, !machineIsIdle(call.owner) { return }
             current = nil
             AudioIO.shared.callKitDidEnd()
             guard !call.endedBySystem else { return }
             provider.reportCall(with: call.uuid, endedAt: Date(), reason: .remoteEnded)
         }
+    }
+
+    /// Whether the machine behind a presented call has already ended it.
+    private func machineIsIdle(_ owner: Owner) -> Bool {
+        switch owner {
+        case .live:
+            if case .idle = LiveCall.shared.state { return true }
+        case .video:
+            if VideoCall.shared.state == .idle { return true }
+        case .agent:
+            if !VoiceAgentSession.shared.isActive { return true }
+        }
+        return false
     }
 
     /// Mute changed in-app (Bar): mirror to the system UI.

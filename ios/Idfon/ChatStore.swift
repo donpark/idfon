@@ -134,11 +134,17 @@ final class ChatStore {
         // never shown as chat history. Invites go through the per-channel
         // incoming-call router (Bar vs CallKit presentation); teardown goes
         // direct to both machines, since the mode governs presentation only.
-        // Invites replayed from the event backlog are stale (the call they
-        // belonged to already happened) — never ring on them, else every
-        // hangup resurrects a ghost call.
+        // A *start* replayed from the event backlog is stale (the call it
+        // belonged to already happened) — never ring on it, else every hangup
+        // resurrects a ghost call. A *ticketed stop* must never be age-gated:
+        // it is not a ring, it is correlated by the call's generation ticket
+        // (so it cannot touch a newer call), and dropping one delivered late
+        // (the app was suspended or reconnecting) leaves this end stuck in a
+        // call the peer already left. An unticketed stop keeps the age gate:
+        // a connected call always has a generation, so it can only name an
+        // older aborted attempt.
         if let invite = LiveInvite.parse(text) {
-            let stale = isStaleInvite(event)
+            let stale = isStaleInvite(event) && (invite.isStart || invite.ticket.isEmpty)
             idfonLog("idfon live control received peer=\(peerId) message=\(messageID) stale=\(stale)")
             if stale { return }
             // A start invite opens a call generation: bare controls carrying a

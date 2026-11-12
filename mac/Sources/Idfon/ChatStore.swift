@@ -135,12 +135,18 @@ final class ChatStore {
         // dropped a new message that reused an id seen from another sender.
         guard seenMessageIDs.insert("\(peerId)|\(messageID)").inserted else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
-        // to the call state machines; never shown as chat history. Invites
-        // replayed after a relaunch are stale (app was closed when they
-        // arrived) — ring only fresh ones, matching the GUI's drain logic.
-        if LiveInvite.parse(text) != nil {
-            idfonLog("idfon event: live invite stale=\(isStaleInvite(event))")
-            if isStaleInvite(event) { return }
+        // to the call state machines; never shown as chat history. A *start*
+        // replayed after a relaunch is stale (app was closed when it arrived)
+        // — ring only fresh ones, matching the GUI's drain logic. A *ticketed
+        // stop* must never be age-gated: it is correlated by the call's
+        // generation ticket (so it cannot touch a newer call), and dropping one
+        // delivered late leaves this end stuck in a call the peer already left.
+        // An unticketed stop keeps the age gate (a connected call always has a
+        // generation, so it can only name an older aborted attempt).
+        if let invite = LiveInvite.parse(text) {
+            let stale = isStaleInvite(event) && (invite.isStart || invite.ticket.isEmpty)
+            idfonLog("idfon event: live invite stale=\(stale)")
+            if stale { return }
             LiveCall.shared.handleEnvelope(peer: peerId, text)
             VideoCall.shared.handleEnvelope(peer: peerId, text)
             return
