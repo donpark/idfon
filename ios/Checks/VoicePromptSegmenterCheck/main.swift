@@ -2,11 +2,15 @@
 // The file is Foundation-only, so it compiles and runs on the host:
 //
 //   swiftc -o /tmp/vpscheck ios/Idfon/VoicePromptSegmenter.swift \
+//     ios/Idfon/QuietClock.swift ios/Idfon/Automation.swift ios/Idfon/IdfonLog.swift \
 //     ios/Checks/VoicePromptSegmenterCheck/main.swift
 //   /tmp/vpscheck
 //
 // Prints "ALL OK" or the first failing assertion (exit 1).
 import Foundation
+
+// The quiet clock's early end is opt-in; this check exercises it.
+setenv("IDFON_QUIET_END", "1", 1)
 
 func check(_ cond: Bool, _ msg: String) {
     if !cond { print("FAIL:", msg); exit(1) }
@@ -64,5 +68,35 @@ c.clear()
 RunLoop.current.run(until: Date().addingTimeInterval(0.8))
 check(ccommits.isEmpty, "cleared partial is not committed")
 c.stop()
+
+// Early end: 240 ms of measured quiet commits before the text gap. The audio
+// helpers mirror QuietClockCheck (a 220 Hz voice over a -60 dBFS room).
+func checkTone(_ seconds: Double, _ amplitude: Float) -> [Float] {
+    (0..<Int(seconds * 16_000)).map { amplitude * sinf(2 * .pi * 220 * Float($0) / 16_000) }
+}
+func checkRoom(_ seconds: Double, _ amplitude: Float = 0.001) -> [Float] {
+    var rng = SystemRandomNumberGenerator()
+    return (0..<Int(seconds * 16_000)).map { _ in amplitude * Float.random(in: -1...1, using: &rng) }
+}
+
+let clockSeg = VoicePromptSegmenter(gap: 5)
+var clockCommits: [String] = []
+clockSeg.onCommit = { clockCommits.append($0) }
+clockSeg.start()
+clockSeg.feedAudio(checkRoom(1.0), sampleRate: 16_000)
+clockSeg.handle("hello world", isFinal: false)
+clockSeg.feedAudio(checkTone(0.3, 0.05) + checkRoom(0.35), sampleRate: 16_000)
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+check(clockCommits == ["hello world"], "quiet clock commits before the text gap")
+
+// A final for that same utterance right after must not make a second turn.
+clockSeg.handle("Hello world.", isFinal: true)
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+check(clockCommits == ["hello world"], "late final for the clock's utterance is dropped")
+
+// A genuinely new utterance still commits.
+clockSeg.handle("second", isFinal: true)
+check(clockCommits == ["hello world", "second"], "a different final still commits")
+clockSeg.stop()
 
 print("ALL OK")

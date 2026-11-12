@@ -169,6 +169,12 @@ Catalyst with its own exact command in
 `ios/Checks/HealthCardCheck/main.swift` — the app-side symbols it touches
 (`ChatStore.appendOutgoing`) are stubbed there, so it needs no daemon.
 
+The voice loop's quiet clock (RealtimeVAD's 10 ms noise-referenced rule, see
+[benchmarks.md](benchmarks.md)) has two host checks: `ios/Checks/QuietClockCheck`
+(synthetic pause/resume, re-arm, raised noise floor, sample-rate change) and
+`ios/Checks/QuietClockReplay` (real call WAVs through the shipping clock).
+Exact `swiftc` commands are in each `main.swift`.
+
 `ios/IdfonTests` is the app-hosted XCTest target (`@testable import Idfon`) for
 the hybrid web layer; run it on a connected iPhone with `pnpm ios test`.
 

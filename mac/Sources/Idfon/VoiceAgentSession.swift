@@ -621,6 +621,7 @@ final class VoiceAgentSession: NSObject {
             // drop until the model has loaded; the load must not block the UI.
             engine.setSamplesHandler { [weak self] samples, rate in
                 self?.turnShadow?.feed(samples, rate: rate)
+                DispatchQueue.main.async { self?.segmenter.feedAudio(samples, sampleRate: rate) }
             }
             Task { @MainActor [weak self] in
                 guard let self, self.turnShadow == nil else { return }

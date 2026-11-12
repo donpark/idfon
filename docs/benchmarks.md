@@ -68,11 +68,40 @@ idfon-auto: voice-agent: turn=3 asr_gap_ms=1240 listen_ms=2100 reply_ms=870 spea
 
 | Field | Stage |
 | --- | --- |
-| `asr_gap_ms` | **turn detection**: recognizer's last update → commit — the `VoicePromptSegmenter` silence gap (~1200–1500 on the fallback path, + up to 300 ms tick; ~0 on a recognizer final) |
+| `asr_gap_ms` | **turn detection**: recognizer's last update → commit — the `VoicePromptSegmenter`'s end: the text gap (1.2 s mac / 0.8 s iOS) or, with `IDFON_QUIET_END=1`, the quiet clock (≈240 ms of measured quiet after text settles 150 ms); + up to 100 ms tick; ~0 on a recognizer final |
 | `listen_ms` | the listening window for the caller's utterance |
 | `reply_ms` | send → agent reply arrival: **network + agent turn** (§1 measures the network share) |
 | `speak_ms` | TTS synthesis + playback, includes `speak()`'s ~800 ms post-roll hold |
 | `total_ms` | the whole turn |
+
+A second marker explains the end: the quiet clock from RealtimeVAD (MIT), a
+10 ms block RMS compared with the learned room noise level, fed the same mic
+audio as the recognizer.
+
+```
+idfon-auto: quiet-clock: via=clock pauses=6 long_resumed=1 max_resumed_ms=310 end_quiet_ms=240 commit_gap_ms=810
+```
+
+`via` is `clock` (measured quiet), `gap` (text-gap fallback), `final`
+(recognizer final) or `force` (turn model). `pauses` counts speech-off events
+in the turn, `long_resumed` the ones that resumed after ≥ 240 ms — a wrong
+early end — and `max_resumed_ms` the longest such gap. `end_quiet_ms` is the
+quiet measured at commit; `commit_gap_ms` is the recognizer-text lag.
+
+The clock's early end is **off by default** (`IDFON_QUIET_END=1` enables it).
+Replaying the `endpoint-audit-2026-11-06`/`2` clips (40 real 6 s call excerpts,
+16 kHz stereo channel 0) through the shipping `QuietClock`, primed with each
+clip's 10th-percentile room level: a ≥ 240 ms quiet run starts within 1.5 s
+after the candidate mark in **8 of 20 non-endpoint clips** and in 1 of 20
+endpoint clips. The rule is not yet a safe turn end on real audio; the
+text-gap path stays. Reproduce with `ios/Checks/QuietClockReplay` or watch
+`long_resumed` on a live call.
+
+Those false positives are not backchannel moments: of the 12 clock-end pauses
+in the 8 non-endpoint clips, 9 have no speech on the other channel during the
+pause, and the 3 that do are 0.75–1.8 s overlaps (turn alternation), not short
+acknowledgements. So `pause` is not a usable proxy for the backchannel head as
+measured here — it is ordinary mid-turn pausing.
 
 ```sh
 scripts/voice-latency-report.sh call.log    # captured marker log
