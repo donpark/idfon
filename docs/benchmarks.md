@@ -68,7 +68,7 @@ idfon-auto: voice-agent: turn=3 asr_gap_ms=1240 listen_ms=2100 reply_ms=870 spea
 
 | Field | Stage |
 | --- | --- |
-| `asr_gap_ms` | **turn detection**: recognizer's last update → commit — the `VoicePromptSegmenter`'s end: the text gap (1.2 s mac / 0.8 s iOS) or, with `IDFON_QUIET_END=1`, the quiet clock (≈240 ms of measured quiet after text settles 150 ms); + up to 100 ms tick; ~0 on a recognizer final |
+| `asr_gap_ms` | **turn detection**: recognizer's last update → commit — the `VoicePromptSegmenter`'s end: the text gap (1.2 s mac / 0.8 s iOS) or, with `IDFON_QUIET_END=1`, the quiet clock (≈240 ms of measured quiet after text settles 150 ms); + up to 100 ms tick; ~0 on a recognizer final — Apple only: the Nemotron engine never delivers a final (it emits `isFinal=false` on every partial), so its turns end via the gap, the quiet clock, or Tyger's `forceCommit` |
 | `listen_ms` | the listening window for the caller's utterance |
 | `reply_ms` | send → agent reply arrival: **network + agent turn** (§1 measures the network share) |
 | `speak_ms` | TTS synthesis + playback, includes `speak()`'s ~800 ms post-roll hold |
