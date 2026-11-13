@@ -12,6 +12,7 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- | --- |
 | `../AGENTS.md` | repository working rules and the iOS shipping checklist (gated IPA, credentials, build numbers, upload verification, TestFlight push smoke test) | shipping an iOS update or checking agent workflow rules |
 | `communication-model.md` | identities, peers, messages, grants | anything about the core model |
+| `endpoint-ux.md` | the platform beneath contacts-as-typed-endpoints: endpoint registry + dispatch pipeline, trust/friction store (high friction decaying with use), handover-surface contract, folders/files + viewer/editor registry (OPML/RSS/media reuse; the artifact matrix agents can support), agent verbs, per-type affordance sketch (design) | designing contact interaction, adding an endpoint type, wiring the agent to UI dispatch, trust/permission UX |
 | `daemon.md` | why there is a daemon at all; the daemon as packaging of the feature functions | questioning the process model |
 | `protocol.md` | daemon JSON IPC methods/params | adding/changing an RPC or a client |
 | `interaction-parameters.md` | CLI vs GUI responsibility split | where a policy/feature belongs |
