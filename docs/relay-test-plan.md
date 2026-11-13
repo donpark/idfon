@@ -350,9 +350,28 @@ enables that feature and accepts the cert behind an env guard
 
 ### Known gaps
 
-- Apple's container kernel has no `sch_netem` (`tc qdisc add … netem` →
-  "Specified qdisc kind is unknown"), so `impair` / `set-link-condition`
-  silently do nothing. Use the QEMU backend if the loss/latency rows matter.
+- **Impairment needs the QEMU backend.** The Apple container kernel (6.18.5,
+  `container` 0.9.0) has no `sch_netem`: `tc qdisc add … netem` fails with
+  "Specified qdisc kind is unknown", so `impair` / `set-link-condition`
+  silently does nothing there. The QEMU backend's Debian kernel has it; a
+  `set-link-condition` step applied
+  `qdisc netem 1: root refcnt 15 limit 1000 delay 20ms loss 1%` and read it
+  back from inside the device namespace (2026-11-12).
+- Two environmental snags when running the QEMU backend on macOS:
+  1. The Debian **cloud** kernel has no 9p modules, so `/app`, `/target` and
+     `/work` fail to mount (`unknown filesystem type '9p'`). Install
+     `linux-image-arm64` in the guest and boot it — that kernel's 9p modules
+     are present. `GRUB_DEFAULT="1>2"` selects it under the "Advanced"
+     submenu (the cloud kernel stays the default otherwise).
+  2. patchbay invokes the guest runner via `sudo`, and root over the 9p share
+     hits `EACCES` creating the nested `run-*/.assemble` dirs. Run the runner
+     as the guest user instead, with the guest uid matching the host share
+     owner (e.g. `usermod -u <host-uid> dev`):
+     `sudo -u dev env NETSIM_IN_VM=1 NETSIM_TARGET_DIR=/target
+     /work/.patchbay-bin/patchbay run --work-dir /work <sim>`.
+- patchbay finds `qemu-img` through `sh -lc`, whose login PATH on this host
+  omits `/opt/homebrew/bin`. Symlink `qemu-img` and `qemu-system-aarch64`
+  into `/usr/local/bin` before using the QEMU backend.
 - No Apple processes inside a lab, so it can never cover app ↔ daemon
   transfers; no clock virtualization; the lab is a closed world with an
   in-process DNS server and no host egress, so n0 discovery is unreachable —
