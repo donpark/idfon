@@ -293,25 +293,33 @@ exists to find.
   `libasound.a`: the Debian `.so` is glibc and pulls glibc symbols into an
   otherwise static musl binary.
 
-#### Post-fix re-run (2026-11-12)
+#### Post-fix re-runs (2026-11-12)
 
-Same cells, same 4 MiB `put` -> `get`, with the blob cache fix
-(`crates/idfon-daemon/src/blob.rs`). Hashes matched, and every byte still
-went through the relay in *both* cells:
+Same cells, same 4 MiB `put` -> `get`, `sha256` matched everywhere. Two
+separate defects were fixed, and the relay traffic shows each one:
 
-| cell | put relay rx | get relay rx | get / payload |
-|---|---|---|---|
-| moderate <-> moderate | +11.5 kB | +4.40 MB | 1.05x |
-| moderate <-> strict | +11.5 kB | +4.40 MB | 1.05x |
+| cell | put relay rx | get relay rx | get / payload | path |
+|---|---|---|---|---|
+| moderate <-> moderate | +11.5 kB | +35.5 kB | 0.008x | direct |
+| moderate <-> strict | +11.5 kB | +4.42 MB | 1.05x | relay |
 
-The 2026-11-05 numbers were ~92 MB (22x) and ~6.5 MB (6.5x); both matched
-`ceil(size / 200 kB)` re-downloads, and both are gone. A `get` is now one
-full blob transfer (the first slice downloads, the rest are local reads), so
-~4.4 MB is the correct floor for a 4 MiB get over the relay.
+1. **Per-chunk re-download.** Before the cache fix, get rx was ~92 MB (22x)
+   in both cells, matching `ceil(size / 200 kB)` full downloads. With the
+   content-verified `blobs-fetched/{hash}.blob` cache, both cells dropped to
+   4.40 MB (1.05x): one full transfer, then local slices.
+2. **The blob path never went direct.** After the cache fix alone, the
+   moderate cell still relayed the whole payload. `blob::fetch` dialed the
+   provider and started the download immediately; hole punching only begins
+   once that connection exists, so a sub-second transfer finished on the
+   relay before a direct path was selected. It now dials first and waits
+   (bounded, 2 s) for a selected direct IP path before downloading, holding
+   the connection open. Moderate then moved the payload direct and matched
+   `iroh-doctor`'s +34.7 kB of relay signaling; strict has no direct path, so
+   the bounded wait falls through to the relay with unchanged traffic (and
+   ~2 s of extra latency once per blob).
 
-**The "never direct" finding is unchanged.** The moderate cell, whose NAT
-pair `iroh-doctor` punches on, still pushes a full payload through the relay.
-That remains the open question this lab exists to answer.
+Direct selection in the moderate cell took under 300 ms, so 2 s is a
+conservative ceiling rather than a typical cost.
 
 Lab build notes for reproducing on macOS: sim commands address staged
 binaries as `${binary.<name>}`, so the run must pass

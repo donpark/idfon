@@ -139,6 +139,25 @@ fn cache_matches(path: &Path, hash: iroh_blobs::Hash) -> bool {
     }
 }
 
+/// Waits until a direct IP path is selected, or `limit` elapses. The relay
+/// path already works; this only decides whether the transfer starts before or
+/// after hole punching wins.
+async fn wait_for_direct_path(
+    conn: &iroh::endpoint::Connection,
+    limit: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if conn.paths().iter().any(|path| path.is_ip() && path.is_selected()) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 async fn fetch_with(
     ticket: &BlobTicket,
     endpoint: &Endpoint,
@@ -148,6 +167,22 @@ async fn fetch_with(
     static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
     let store = FsStore::load(root).await?;
     let result = async {
+        // Dial before the downloader does, so hole punching starts while the
+        // transfer is still being set up. Paths opened on this connection are
+        // opened on the downloader's connection too, so a direct path found
+        // here is what keeps a short transfer off the relay.
+        let prewarm = match endpoint.connect(ticket.addr().clone(), BLOBS_ALPN).await {
+            Ok(conn) => {
+                let direct =
+                    wait_for_direct_path(&conn, std::time::Duration::from_secs(2)).await;
+                tracing::debug!(target: "idfon.blob", direct, "blob fetch prewarm");
+                Some(conn)
+            }
+            Err(error) => {
+                tracing::debug!(target: "idfon.blob", %error, "blob fetch prewarm failed");
+                None
+            }
+        };
         // The downloader has no internal timeout; a stuck connection must not
         // hang the daemon request (and worker) indefinitely.
         tokio::time::timeout(
@@ -180,6 +215,7 @@ async fn fetch_with(
             let _ = tokio::fs::remove_file(&tmp).await;
             return Err(error.into());
         }
+        drop(prewarm);
         Ok::<PathBuf, anyhow::Error>(output.to_path_buf())
     }
     .await;
