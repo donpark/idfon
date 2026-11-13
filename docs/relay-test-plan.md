@@ -293,6 +293,34 @@ exists to find.
   `libasound.a`: the Debian `.so` is glibc and pulls glibc symbols into an
   otherwise static musl binary.
 
+#### Post-fix re-run (2026-11-12)
+
+Same cells, same 4 MiB `put` -> `get`, with the blob cache fix
+(`crates/idfon-daemon/src/blob.rs`). Hashes matched, and every byte still
+went through the relay in *both* cells:
+
+| cell | put relay rx | get relay rx | get / payload |
+|---|---|---|---|
+| moderate <-> moderate | +11.5 kB | +4.40 MB | 1.05x |
+| moderate <-> strict | +11.5 kB | +4.40 MB | 1.05x |
+
+The 2026-11-05 numbers were ~92 MB (22x) and ~6.5 MB (6.5x); both matched
+`ceil(size / 200 kB)` re-downloads, and both are gone. A `get` is now one
+full blob transfer (the first slice downloads, the rest are local reads), so
+~4.4 MB is the correct floor for a 4 MiB get over the relay.
+
+**The "never direct" finding is unchanged.** The moderate cell, whose NAT
+pair `iroh-doctor` punches on, still pushes a full payload through the relay.
+That remains the open question this lab exists to answer.
+
+Lab build notes for reproducing on macOS: sim commands address staged
+binaries as `${binary.<name>}`, so the run must pass
+`--binary idfond:path:... --binary idfon:path:... --binary relay:path:...`.
+The musl daemon needs a fake ALSA pkg-config plus a stub `libasound.a`,
+`--no-default-features` on `iroh-c-ffi` (skips VAAPI), `IDFON_FFI_STATIC=1`
+for `idfond`, and
+`RUSTFLAGS="-C link-arg=-Wl,--allow-multiple-definition -C link-arg=-Wl,--unresolved-symbols=ignore-all"`.
+
 ### The QAD/TLS trap (this cost a full false negative)
 
 `iroh-relay --dev` serves plain HTTP and **refuses QUIC address discovery**

@@ -60,13 +60,13 @@ ready_after = "2s"
 action = "spawn"
 id = "daemon-a"
 device = "alice"
-cmd = ["sh", "-c", "IDFON_RELAY_CA_FILE=${tls.cert_pem_path} IDFON_ENDPOINT_PORT=59100 exec /work/bin/idfond --socket /tmp/idfon-__CELL__-a.sock --data-dir /tmp/idfon-__CELL__-a --relay-urls https://$NETSIM_IP_relay:4433"]
+cmd = ["sh", "-c", "IDFON_RELAY_CA_FILE=${tls.cert_pem_path} IDFON_ENDPOINT_PORT=59100 exec ${binary.idfond} --socket /tmp/idfon-__CELL__-a.sock --data-dir /tmp/idfon-__CELL__-a --relay-urls https://$NETSIM_IP_relay:4433"]
 
 [[step]]
 action = "spawn"
 id = "daemon-b"
 device = "bob"
-cmd = ["sh", "-c", "IDFON_RELAY_CA_FILE=${tls.cert_pem_path} IDFON_ENDPOINT_PORT=59200 exec /work/bin/idfond --socket /tmp/idfon-__CELL__-b.sock --data-dir /tmp/idfon-__CELL__-b --relay-urls https://$NETSIM_IP_relay:4433"]
+cmd = ["sh", "-c", "IDFON_RELAY_CA_FILE=${tls.cert_pem_path} IDFON_ENDPOINT_PORT=59200 exec ${binary.idfond} --socket /tmp/idfon-__CELL__-b.sock --data-dir /tmp/idfon-__CELL__-b --relay-urls https://$NETSIM_IP_relay:4433"]
 
 [[step]]
 action = "run"
@@ -113,7 +113,7 @@ parser = "text"
 action = "run"
 id = "put"
 device = "alice"
-cmd = ["/work/bin/idfon", "--socket", "/tmp/idfon-__CELL__-a.sock", "put", "--file", "/tmp/data-__CELL__.bin"]
+cmd = ["${binary.idfon}", "--socket", "/tmp/idfon-__CELL__-a.sock", "put", "--file", "/tmp/data-__CELL__.bin"]
 parser = "text"
 
 [step.captures.ticket]
@@ -131,7 +131,7 @@ parser = "text"
 action = "run"
 id = "get"
 device = "bob"
-cmd = ["/work/bin/idfon", "--socket", "/tmp/idfon-__CELL__-b.sock", "get", "${put.ticket}", "--out", "/tmp/got-__CELL__.bin"]
+cmd = ["${binary.idfon}", "--socket", "/tmp/idfon-__CELL__-b.sock", "get", "${put.ticket}", "--out", "/tmp/got-__CELL__.bin"]
 parser = "text"
 
 [[step]]

@@ -35,10 +35,15 @@ case "$kind" in
   *) echo "gen.sh: unknown cell: $kind" >&2; exit 2 ;;
 esac
 
+case "$kind" in
+  punch) bins="--binary punch:path:$out/punch-aarch64" ;;
+  iroh) bins="--binary doctor:path:<iroh-doctor> --binary relay:path:<iroh-relay>" ;;
+  idfond) bins="--binary idfond:path:<idfond> --binary idfon:path:<idfon> --binary relay:path:<iroh-relay>" ;;
+esac
+
 cat <<EOF
 
 run (from this directory):
   patchbay vm run $out --patchbay-version path:<runner> \\
-    --binary punch:path:$out/punch-aarch64 \\
-    --binary doctor:path:<iroh-doctor> --binary relay:path:<iroh-relay>
+    $bins
 EOF
