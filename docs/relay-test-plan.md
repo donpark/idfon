@@ -264,13 +264,20 @@ Two `idfond` nodes (alice behind `moderate`, bob behind `strict`, then both
 `sha256` matched on every run, so the daemon path works through a private
 TLS relay with a private CA. Two things it exposed:
 
-- **The blob path never went direct.** Relay-device rx grew by ~92 MB during
-the `get` in *both* cells (~6.5x for 1 MiB, ~22x for 4 MiB — the overhead is
-unexplained and deserves its own look), while `put` cost ~11 kB. Taking the
-relay's link down between `put` and `get` fails the fetch with
-`PeerOffline: Unable to download`, so every byte went through the relay even
-on `moderate` ↔ `moderate`, where `iroh-doctor` on the same NAT pair punched.
-That is the gap the lab exists to find.
+- **The blob path never went direct, and the measured blob traffic was
+inflated by a daemon bug.** Relay-device rx grew by ~92 MB during the `get`
+in *both* cells (~6.5x for 1 MiB, ~22x for 4 MiB), while `put` cost ~11 kB.
+Those multiples are `ceil(size / 200 kB)`: every chunk request re-downloaded
+the whole blob, because the per-request `FsStore` was dropped without
+`shutdown()`, losing the completion state it had just written. Fixed
+2026-11-12 in `crates/idfon-daemon/src/blob.rs` — one content-verified
+`blobs-fetched/{hash}.blob` now serves every later slice. A repeat run should
+show roughly one file size of relay rx; a higher multiple is a regression.
+The path is still never direct: taking the relay's link down between `put`
+and `get` fails the fetch with `PeerOffline: Unable to download`, so every
+byte went through the relay even on `moderate` ↔ `moderate`, where
+`iroh-doctor` on the same NAT pair punched. That remains the gap the lab
+exists to find.
 - The lab needs two build knobs, both env-gated and generally useful:
   `IDFON_RELAY_CA_FILE=<pem>` makes the daemon trust a relay with a private
   CA (the relay client otherwise verifies against Mozilla's roots), and

@@ -65,8 +65,11 @@ The CLI splits transfers into 200 KB chunks:
   a final `{finish:true}` request, so payloads are not limited by the 1 MB
   IPC frame.
 - `get` reads `media.resource.fetch {offset,length}` slices until
-  `total_size` is reached. The receiver's blob store persists downloaded
-  blobs, so only the first slice transfers over the network.
+  `total_size` is reached. `blob::fetch` caches the transfer as
+  `blobs-fetched/{hash}.blob` and checks its blake3 before serving it, so
+  only the first slice transfers over the network and each later slice is a
+  local read. The cache file is written to a temp path, fsynced, and renamed,
+  so a partial file is never served.
 - One-shot put/fetch (single `bytes` array, no flags) still works for small
   payloads and is what the daemon unit tests cover.
 
@@ -78,6 +81,11 @@ still arrive before the sender's first pkarr publish has propagated to the
 n0 discovery infrastructure. `blob::fetch` therefore retries with a
 fresh endpoint (fresh DNS resolver) up to six times, one second apart, with
 a 30 s timeout per download attempt.
+
+Each request's `FsStore` is closed with `shutdown()` rather than dropped: a
+background drop can lose the completion state it just wrote (turning every
+chunk request into a full re-download) and leaves `blobs.db` locked long
+enough for the next attempt to fail.
 
 ## End-to-end test
 
