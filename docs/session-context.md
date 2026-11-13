@@ -83,7 +83,7 @@ never calls `speak`.
   session id. Implemented in `context-store.ts`.
 - **`speak`.** `IDFON-SPEAK/1` envelope emitted to the per-session outbox
   (`extension/outbox.ts`) and appended to the reply by the channel at
-  `message.completed`, metadata `{text, voice, language, rate, priority,
+  `content.completed` (`phase: "reply"`), metadata `{text, voice, language, rate, priority,
   correlation_id}`. The TTS-capable voice agent consumes it; agents that never
   call `speak` keep speaking their reply text. `point` and `show` use the same
   emit path. Implemented.

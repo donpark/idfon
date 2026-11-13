@@ -2,13 +2,15 @@
   "name": "eve-idfon-spike",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "clean": "rm -rf .output dist"
   },
   "dependencies": {
-    "eve": "0.68.0",
+    "eve": "1.0.0-rc.9",
     "eve-idfon": "link:../../integrations/eve-idfon",
-    "just-bash": "^3.4.2"
+    "just-bash": "^3.6.0"
   }
 }

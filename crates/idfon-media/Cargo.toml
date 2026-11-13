@@ -41,7 +41,6 @@ n0-future = "0.3.2"
 # target (`pnpm ios build`). Hold the graph at 0.2.189; drop the pin when
 # iroh ships netwatch 0.20 / netdev 0.47 (or netdev gets the fix in 0.46.x).
 libc = "=0.2.189"
-jpeg-encoder = "0.7"
 # fMP4/MKV/TS/FLV/H.264 import (video file demuxing) and the in-memory
 # broadcast pair used to replay imported tracks. Versions must stay in lock
 # with what iroh-live resolves to (see Cargo.lock).

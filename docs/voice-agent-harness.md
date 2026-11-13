@@ -25,7 +25,7 @@ plus the session state around it. It is not the audio pipeline. In idfon today:
 
 | Layer | Owner | Language |
 | --- | --- | --- |
-| LLM tool loop | **Eve** (`eve@0.68.0`) | TypeScript / Node |
+| LLM tool loop | **Eve** (`eve@1.0.0-rc.9`) | TypeScript / Node |
 | Audio and session loop | `crates/idfon-voice-agent` (`cascade.rs`, `gpt_live.rs`) | Rust |
 | Live reply generation | Vercel AI SDK (`ai@7`) in `agents/gpt-live-1` | TypeScript / Node |
 

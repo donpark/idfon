@@ -120,7 +120,7 @@ to an otherwise image-free prompt came back as *"It contains a red circle"* in
 The multimodal surface is a set of tools in `eve-idfon`, so any idfon-aware
 agent gets them and chooses dynamically. A tool **emits** its envelope to a
 per-session outbox (`extension/outbox.ts`); the channel appends the queued
-envelopes to the reply at `message.completed`, in tool-call order. Delivery does
+envelopes to the reply at `content.completed` (`phase: "reply"`), in tool-call order. Delivery does
 not depend on the model echoing the envelope, and the client sees one reply with
 the effects ordered.
 

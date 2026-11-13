@@ -62,7 +62,7 @@ chunked speak, locked by `mac/Checks/SpeechChunkerCheck`. The delta wire's
 server half already existed — the gap was delivery to the client-cascade app,
 now closed:
 
-- `extension/channels/idfon.ts` `message.appended` → POST `/stream/append`
+- `extension/channels/idfon.ts` `content.delta` → POST `/stream/append`
   (per-delta, retry-safe keys `(turn_id, step_index, sequence)`).
 - `bridge.mjs` `/stream/append` → IPC `StreamAppend` (`crates/eve-idfon`).
 - Holder `IpcFrame::StreamAppend` handler (`crates/eve-idfon/src/lib.rs`

@@ -29,16 +29,17 @@ export default defineChannel({
       const session = await from(address).send(body.text, {
         auth: authFor(body.peerId),
       });
-      return Response.json({ sessionId: session.id, address });
+      return Response.json({ sessionId: session.sessionId, address });
     }),
   ],
   events: {
-    "message.completed"(event, _channel, ctx) {
+    "content.completed"(event, ctx) {
+      if (event.data.kind !== "text" || event.data.phase !== "reply") return;
       appendFileSync(
         replyFile,
         `${JSON.stringify({
           sessionId: ctx.session.id,
-          message: event.message,
+          message: event.data.value,
           principalId: ctx.session.auth.initiator?.principalId ?? null,
         })}\n`,
       );

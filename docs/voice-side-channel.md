@@ -170,7 +170,7 @@ call arrives as an incoming request the user can decline. See
 
 | ID | Requirement |
 | --- | --- |
-| N1 | **Per-hop latency budget** — publish a budget table (end-of-turn → STT final → client sign → holder → Eve turn start → first `message.appended` → first audio) with p50/p95 per hop; ~500 ms–1 s end-to-end only if the budget closes. Measure Eve-overhead in P0/P1. |
+| N1 | **Per-hop latency budget** — publish a budget table (end-of-turn → STT final → client sign → holder → Eve turn start → first `content.delta` → first audio) with p50/p95 per hop; ~500 ms–1 s end-to-end only if the budget closes. Measure Eve-overhead in P0/P1. |
 | N2 | **Streaming both ways** — partial STT in; TTS fed incremental agent text (F11). |
 | N3 | **Provider seam** — STT/TTS/endpointing interchangeable: local and cloud. Engine processes are **shared per host** behind the seam, not one per holder. |
 | N4 | **License-clean** — permissive code and weights where the client is concerned; server-side copyleft handled by process separation (and GPL obligations still apply to shipped npm packages). |
@@ -233,7 +233,7 @@ Rules:
 - **Any layer may speak or stay silent**, but non-actor speech is restricted by
   F9. One canonical transcript records every utterance labeled by speaker.
 - **Agent output streams (F11).** The service feeds TTS incrementally and keeps
-  a **display-only** coalesced copy; Eve's `message.completed` is the
+  a **display-only** coalesced copy; Eve's `content.completed` (`phase: "reply"`) is the
   authoritative history copy.
 
 ### Writing to Eve history
@@ -300,7 +300,8 @@ to the cascade.
   `/records/drain`, which forwards `records.drain` over holder IPC. `drain` is
   **idempotent per `turnId`**: a replayed/resumed turn returns nothing.
 - **Resolver**: `integrations/eve-idfon/extension/instructions/voice-records.ts`
-  is a `defineDynamic` **user-role** instruction on `turn.started`; it emits the
+  is a `defineDynamic` **user-role** instruction (Eve 1.0 evaluates it before
+  each model call, keyed by `ctx.turn.id`); it emits the
   records as escaped JSON (`speaker` is a fixed enum, so a transcript cannot
   forge a label). No records → `null` (no history entry). A bridge failure
   returns `null` and leaves the records buffered.
@@ -384,11 +385,12 @@ to the cascade.
   consumes `MessageDelta`s and runs strip → dedupe → clause batch → incremental
   TTS. `EnvelopeStripper` is a deterministic state machine that drops
   `IDFON-*/1` spans even when a marker is split across deltas; `ClauseBatcher`
-  emits whole clauses; `reasoning.appended` is never accepted (only
-  `MessageDelta`). First audio is produced before `finish()`.
+  emits whole clauses; reasoning deltas (`kind: "reasoning"`) are never
+  accepted, only text ones. First audio is produced before `finish()`.
 - **Retry dedupe**: a `HashSet<DeltaKey>` keyed on
-  `(turnId, stepIndex, sequence)`; a provider retry repeats the triple and is
-  ignored, while a different sequence still speaks.
+  `(turnId, stepIndex, sequence)`, fed by the stream position; a provider
+  retry repeats the triple and is ignored, while a different sequence still
+  speaks.
 - **Barge-in** (`idfon-voice/src/bargein.rs`): `BargeInController` returns
   `Steer` before playback (drop nothing) and `CancelThenQueue` during playback,
   bumping a **counter**; `should_drop(counter)` drops only pre-cancel deltas, so
@@ -401,7 +403,7 @@ to the cascade.
 - **Truncation** is recorded through the P0 buffer
   (`VoiceRecord::playback_truncated { msg_id, heard_until }`) by both the
   client-cascade and holder-cascade barge-in paths.
-- **Transport**: the channel subscribes to `message.appended` and POSTs each
+- **Transport**: the channel subscribes to `content.delta` and POSTs each
   delta `{turn_id, step_index, sequence, text}` to bridge `/stream/append`, which
   forwards `stream.append` over holder IPC. The hop stays per-delta so the
   coordinate dedupe is retry-safe; clause batching happens at the TTS boundary.
@@ -801,9 +803,9 @@ Two cases, because `steer` keeps the **same** `turnId`:
   `turnId`/`stepIndex`/`sequence`; **dedupe spoken text by that triple** and
   speak at **sentence** boundaries only (one granularity, not clause *and*
   sentence). Record a "heard" entry whenever spoken text differs from
-  `message.completed`. Treat `step.failed` (or repeated coordinates) as a
+  `content.completed`. Treat `step.failed` (or repeated coordinates) as a
   stop-and-notice event; a content-filter failure leaves deltas with no
-  `message.completed`.
+  `content.completed`.
 - **Tests:** retry duplication, cancel/truncation, tool-cancel guard.
 
 ### Attach model (how an agent gains voice)
@@ -956,7 +958,7 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 - **P4 — realtime streaming.** **Implemented** (2026-10-01):
   `StreamingSpeaker` (strip → dedupe → clause batch → incremental TTS) and
   `BargeInController` in `idfon-voice`; the channel forwards
-  `message.appended` deltas over the loopback bridge to the holder
+  `content.delta` deltas over the loopback bridge to the holder
   (§P4 implementation).
 - **P5 — turn-taking & echo.** **Implemented + verified on device**
   (2026-10-01):
@@ -984,9 +986,9 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 - **Batch deltas to clause boundaries** before posting; add an explicit
   per-delta sequence number — Eve's `sequence` is a block coordinate, and
   ordering is stream order only.
-- Keep a **display-only** coalesced copy; Eve's `message.completed` is
-  authoritative history.
-- Never speak `reasoning.appended`.
+- Keep a **display-only** coalesced copy; Eve's `content.completed`
+  (`phase: "reply"`) is authoritative history.
+- Never speak `content.delta`/`content.completed` with `kind: "reasoning"`.
 
 ## Retention
 
@@ -1022,12 +1024,14 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 ## Resolved
 
 - **Streaming deltas (F11) — answer, do not re-scope as an Eve problem.**
-  `eve@0.68.0` emits `MessageAppendedStreamEvent` (`type: "message.appended"`,
-  fields `messageDelta`/`sequence`/`stepIndex`/`turnId`), plus
-  `message.completed` per assistant step and `reasoning.appended` separately.
-  Custom channels consume these via an `events` handler or a `WS()` route using
-  `attachSession(id).getEventStream()` (NDJSON). The idfon channel coalesces per
-  turn *by choice*; the work is idfon-side forwarding over the HTTP bridge.
+  `eve@1.0.0-rc.9` emits `content.delta` progress records
+  (`data.delta`/`data.partId`, `scope.turnId`) and one `content.completed` per
+  part (`data.phase`: `narration` vs `reply`; `data.kind`: `text` vs
+  `reasoning`). Custom channels consume these via an `events` handler with the
+  stream position (`ctx.position.line`/`.index`); reasoning arrives as
+  `content.delta`/`content.completed` with `kind: "reasoning"`, not a separate
+  event. The idfon channel coalesces per turn *by choice*; the work is
+  idfon-side forwarding over the HTTP bridge.
 
 ## Open questions
 

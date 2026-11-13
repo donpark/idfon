@@ -10,10 +10,14 @@ const dir =
 
 export default defineHook({
   events: {
-    async "message.received"(event) {
+    async "delivery.consumed"(event) {
       // Fail-open: filing must never fail the turn.
+      const text = event.data.parts
+        .filter((part) => part.kind === "text")
+        .map((part) => part.text)
+        .join("\n");
       try {
-        const filed = fileReport(dir, event.data.message);
+        const filed = fileReport(dir, text);
         if (filed < 0) console.error("diag filing: bad IDFON-DIAG/1 report dropped");
       } catch (error) {
         console.error("diag filing failed", error);

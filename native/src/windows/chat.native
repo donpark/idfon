@@ -110,7 +110,7 @@
               <row main="end">
                 <bubble variant="primary">
                   <row gap="8" cross="center">
-                    <if test="{item.audio == playingTicket}">
+                    <if test="{item.playing}">
                       <button size="icon" variant="secondary" icon="pause" on-press="audio_toggle:{item.id}" label="Pause voice message"></button>
                     </if>
                     <else>
@@ -130,7 +130,7 @@
                 </stack>
                 <bubble>
                   <row gap="8" cross="center">
-                    <if test="{item.audio == playingTicket}">
+                    <if test="{item.playing}">
                       <button size="icon" variant="secondary" icon="pause" on-press="audio_toggle:{item.id}" label="Pause voice message"></button>
                     </if>
                     <else>
@@ -198,7 +198,7 @@
   <if test="{videoIdle}">
     <row gap="8" cross="center">
       <text-field text="{videoFileInput}" label="Video file to share" placeholder="Path to a fragmented MP4" on-input="video_file_edit" />
-      <button variant="secondary" on-press="video_share" label="Share video">Share video</button>
+      <button variant="secondary" on-press="video_share">Share video</button>
     </row>
   </if>
   <!-- Messages-style composer: + on the left, one pill field, record/send

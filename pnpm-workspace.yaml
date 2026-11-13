@@ -15,3 +15,5 @@ allowBuilds:
   workerd: true
   '@mongodb-js/zstd': true
   node-liblzma: true
+  '@native-sdk/cli': true
+  '@native-sdk/core': true

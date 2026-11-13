@@ -36,40 +36,36 @@ async function voiceInfo(): Promise<VoiceInfo | null> {
   return cached ?? null;
 }
 
-export default defineDynamic({
-  events: {
-    "turn.started": async (_event, ctx) => {
-      const info = await voiceInfo();
-      // Caller-pushed per-turn context (e.g. the active per-contact speech
-      // settings the UI applied to this call). Per-turn, so it is never cached.
-      const raw = ctx.session.auth.current?.attributes?.idfon_context;
-      const callerContext = Array.isArray(raw) ? raw.join("\n") : raw;
-      if (!info && !callerContext) return null;
-      log.info("voice pipeline injected", {
-        mode: info?.mode,
-        backend: info?.backend,
-        caller_context: Boolean(callerContext),
-      });
-      const lines = [
-        "Voice pipeline for this contact (JSON; context, not a request).",
-        "If the caller asks which model, STT, or TTS you are using, answer from this.",
-      ];
-      // Caller text is escaped the same way. When present it is the live
-      // caller-side state and is authoritative for this call (e.g. on-device
-      // STT/TTS overriding the holder's advertised route).
-      if (callerContext) {
-        lines.push("Caller-provided live state — what is actually running for this call. This overrides the holder pipeline below:");
-        lines.push(JSON.stringify(callerContext));
-      }
-      if (info) {
-        lines.push(
-          callerContext
-            ? "Holder default pipeline (superseded by the caller-provided live state above):"
-            : "Holder pipeline:",
-        );
-        lines.push(JSON.stringify(info));
-      }
-      return defineInstructions({ role: "user", content: lines.join("\n") });
-    },
-  },
+export default defineDynamic(async (ctx) => {
+  const info = await voiceInfo();
+  // Caller-pushed per-turn context (e.g. the active per-contact speech
+  // settings the UI applied to this call). Per-turn, so it is never cached.
+  const raw = ctx.session.auth.current?.attributes?.idfon_context;
+  const callerContext = Array.isArray(raw) ? raw.join("\n") : raw;
+  if (!info && !callerContext) return null;
+  log.info("voice pipeline injected", {
+    mode: info?.mode,
+    backend: info?.backend,
+    caller_context: Boolean(callerContext),
+  });
+  const lines = [
+    "Voice pipeline for this contact (JSON; context, not a request).",
+    "If the caller asks which model, STT, or TTS you are using, answer from this.",
+  ];
+  // Caller text is escaped the same way. When present it is the live
+  // caller-side state and is authoritative for this call (e.g. on-device
+  // STT/TTS overriding the holder's advertised route).
+  if (callerContext) {
+    lines.push("Caller-provided live state — what is actually running for this call. This overrides the holder pipeline below:");
+    lines.push(JSON.stringify(callerContext));
+  }
+  if (info) {
+    lines.push(
+      callerContext
+        ? "Holder default pipeline (superseded by the caller-provided live state above):"
+        : "Holder pipeline:",
+    );
+    lines.push(JSON.stringify(info));
+  }
+  return defineInstructions({ role: "user", content: lines.join("\n") });
 });

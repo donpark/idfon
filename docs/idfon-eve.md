@@ -198,8 +198,9 @@ managed-child packaging the attestation is the IPC channel itself.
 
 ## Delivery and content
 
-- **Text**: idfon `message.send` → a turn; reply events (`message.completed`,
-  `action.result`) → outbound idfon messages via `message.send`.
+- **Text**: idfon `message.send` → a turn; reply events (`content.completed`
+  with `phase: "reply"`, `action.result`) → outbound idfon messages via
+  `message.send`.
 - **Artifacts**: an idfon **blob ticket** maps to a channel file part
   (`UserContent` / `fetchFile`); the agent's outputs go back as blob tickets
   rather than external URLs or sandbox paths (Eve explicitly does not treat
@@ -238,13 +239,14 @@ text `IDFON-DATA/1` envelope, or a referenced ticket), whichever is smaller.
 
 ## Human-in-the-loop
 
-Eve approvals and elicitations already park the turn durably and emit
-`input.requested` / `authorization.required`. The channel maps input requests
-to an authenticated `IDFON-HITL/1` request and answers them with
-`IDFON-HITL-RESPONSE/1` through `inputResponses`; `inputResponses` never steer,
-matching Eve's contract. Authorization challenges and lifecycle outcomes use
-an authenticated `IDFON-STATUS/1` envelope, including the callback challenge,
-`authorization.completed`, `turn.cancelled`, and `turn.failed`.
+Eve approvals and elicitations park the turn durably and emit
+`interaction.opened`; `interaction.settled` reports how each ended. The channel
+maps input requests to an authenticated `IDFON-HITL/1` request and answers them
+with `IDFON-HITL-RESPONSE/1` through `inputResponses`; `inputResponses` never
+steer, matching Eve's contract. Authorization challenges and lifecycle outcomes
+use an authenticated `IDFON-STATUS/1` envelope, including the callback
+challenge, `authorization.completed`, and `turn.cancelled` / `turn.failed`
+(the channel's names for `turn.settled` outcomes `cancelled` / `failed`).
 
 The holder also forwards validated capability grants into Eve session auth
 attributes. Approval policies can therefore require an idfon grant such as

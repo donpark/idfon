@@ -1,5 +1,5 @@
 import { defineChannel, POST } from "eve/channels";
-import { parseInputResponses } from "eve/client";
+import { parseAnswers } from "eve/client";
 
 import extension from "../extension";
 import { logger } from "../log";
@@ -64,6 +64,9 @@ type SessionTarget = {
 };
 
 const sessionTargets = new Map<string, SessionTarget>();const roomTargets = new Map<string, SessionTarget>();
+// Approval interactions opened in a session, so their settlement reports as an
+// authorization status rather than an input answer.
+const approvals = new Set<string>();
 let replyTail: Promise<void> = Promise.resolve();
 
 function authFor(
@@ -120,8 +123,8 @@ async function bridgeRetry(path: string, body: unknown) {
 
 export default defineChannel({
   turnPolicy: "queue",
-  audience({ auth }) {
-    return auth ? "private" : "unknown";
+  audience({ caller }) {
+    return caller.type === "principal" ? "private" : "unknown";
   },
   routes: [
     POST("/idfon/turn", async (request, { from, resolveSession, attachSession, waitUntil }) => {
@@ -182,7 +185,7 @@ export default defineChannel({
         sessionId = existing.id;
       } else {
         const session = await from(address).send(message, { auth });
-        sessionId = session.id;
+        sessionId = session.sessionId;
       }
       const target = completeTurn.conversation
         ? roomTargets.get(completeTurn.conversation) ?? {
@@ -256,7 +259,7 @@ export default defineChannel({
       }
       let responses;
       try {
-        responses = parseInputResponses(input.responses);
+        responses = parseAnswers(input.responses);
       } catch {
         return Response.json({ error: "invalid input responses" }, { status: 400 });
       }
@@ -285,29 +288,33 @@ export default defineChannel({
     };
   },
   events: {
-    async "message.appended"(event, _channel, ctx) {
-      // Realtime forwarding (P4): agent output deltas reach the holder over
-      // the loopback bridge so TTS can start before the turn completes.
-      // Reasoning is never forwarded. The holder dedupes on
-      // (turnId, stepIndex, sequence) and batches to clause boundaries at the
-      // TTS boundary, so the hop stays per-delta and retry-safe.
+    // Realtime forwarding (P4): agent output deltas reach the holder over the
+    // loopback bridge so TTS can start before the turn completes. Reasoning is
+    // never forwarded. Eve 1.0 renamed `message.appended` to `content.delta`;
+    // the holder still dedupes on (turnId, stepIndex, sequence), so the
+    // stream position supplies those and the hop stays retry-safe.
+    async "content.delta"(event, ctx) {
+      if (event.data.kind === "reasoning") return;
       const target = sessionTargets.get(ctx.session.id);
       const member = target?.members.get(target.lastPeerId);
-      if (!member || !event.messageDelta) return;
+      if (!member) return;
       await bridge("/stream/append", {
         peer_id: member.peerId,
-        turn_id: event.turnId,
-        step_index: event.stepIndex,
-        sequence: event.sequence,
-        text: event.messageDelta,
+        turn_id: event.scope?.turnId ?? ctx.session.turn.id,
+        step_index: ctx.position.line,
+        sequence: ctx.position.index,
+        text: event.data.delta,
       });
     },
-    async "message.completed"(event, _channel, ctx) {
+    async "content.completed"(event, ctx) {
+      // One reply part, not the whole turn (Eve 1.0 splits text by phase).
+      if (event.data.kind !== "text" || event.data.phase !== "reply") return;
+      const message = typeof event.data.value === "string" ? event.data.value : "";
       const target = sessionTargets.get(ctx.session.id);
-      if (!target || !event.message) {
+      if (!target || !message) {
         // A dropped reply is invisible otherwise: the caller just hears silence.
         log.warn("reply dropped: no session target", {
-          session: ctx.session.id, has_message: !!event.message,
+          session: ctx.session.id, has_message: !!message,
         });
         return;
       }
@@ -315,7 +322,7 @@ export default defineChannel({
       // reply in tool-call order, so delivery never depends on the model
       // echoing them (docs/voice-multimodal.md).
       const emitted = drainEnvelopes(ctx.session.id);
-      const text = emitted.length ? `${event.message}\n${emitted.join("\n")}` : event.message;
+      const text = emitted.length ? `${message}\n${emitted.join("\n")}` : message;
       const roomMembers = target.conversation
         ? new Map(
             (await bridgeJson<{ members: Array<{ message_id: string; peer_id: string; endpoint_id: string }> }>(
@@ -349,61 +356,56 @@ export default defineChannel({
       replyTail = delivery.catch(() => {});
       await delivery;
     },
-    async "input.requested"(event, _channel, ctx) {
-      const target = sessionTargets.get(ctx.session.id);
-      const member = target?.members.get(target.lastPeerId);
-      const request = event.requests[0];
-      if (!member || !request) return;
-      await bridge("/input", {
-        request_id: request.requestId,
-        peer_id: member.peerId,
-        endpoint_id: member.endpointId,
-        conversation: target?.conversation,
-        requests: event.requests,
-      });
-    },
-    async "authorization.required"(event, _channel, ctx) {
+    async "interaction.opened"(event, ctx) {
       const target = sessionTargets.get(ctx.session.id);
       const member = target?.members.get(target.lastPeerId);
       if (!member) return;
-      await bridge("/status", {
-        in_reply_to: member.messageId,
-        event: "authorization.required",
-        data: event,
+      const { interactionId, request } = event.data;
+      if (request.kind === "approval") {
+        // Kept apart from input requests so `interaction.settled` can report
+        // an authorization result and a question answer through its own path.
+        approvals.add(interactionId);
+        await bridge("/status", {
+          in_reply_to: member.messageId,
+          event: "authorization.required",
+          data: event.data,
+        });
+        return;
+      }
+      // The holder's HITL card keys off `requestId`; the new interaction
+      // fields (kind, prompt, options) ride along for its renderer.
+      await bridge("/input", {
+        request_id: interactionId,
+        peer_id: member.peerId,
+        endpoint_id: member.endpointId,
+        conversation: target?.conversation,
+        requests: [{ requestId: interactionId, ...request }],
       });
     },
-    async "authorization.completed"(event, _channel, ctx) {
+    async "interaction.settled"(event, ctx) {
+      if (!approvals.delete(event.data.interactionId)) return;
       const target = sessionTargets.get(ctx.session.id);
       const member = target?.members.get(target.lastPeerId);
       if (!member) return;
       await bridge("/status", {
         in_reply_to: member.messageId,
         event: "authorization.completed",
-        data: event,
+        data: event.data,
       });
     },
-    async "turn.cancelled"(event, _channel, ctx) {
-      // A cancelled turn's emitted envelopes must not leak into a later one.
+    async "turn.settled"(event, ctx) {
+      // A settled error/cancel ends the turn: emitted envelopes must not leak
+      // into a later one, and the holder shows the same status names it did
+      // before Eve 1.0 folded both into `turn.settled`.
+      if (event.data.outcome === "completed") return;
       drainEnvelopes(ctx.session.id);
       const target = sessionTargets.get(ctx.session.id);
       const member = target?.members.get(target.lastPeerId);
       if (!member) return;
       await bridge("/status", {
         in_reply_to: member.messageId,
-        event: "turn.cancelled",
-        data: event,
-      });
-    },
-    async "turn.failed"(event, _channel, ctx) {
-      // A failed turn's emitted envelopes must not leak into a later one.
-      drainEnvelopes(ctx.session.id);
-      const target = sessionTargets.get(ctx.session.id);
-      const member = target?.members.get(target.lastPeerId);
-      if (!member) return;
-      await bridge("/status", {
-        in_reply_to: member.messageId,
-        event: "turn.failed",
-        data: event,
+        event: event.data.outcome === "cancelled" ? "turn.cancelled" : "turn.failed",
+        data: event.data,
       });
     },
   },

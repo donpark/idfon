@@ -31,6 +31,7 @@ export interface ChatMessage {
   readonly isAudio: boolean;
   readonly audioReady: boolean;
   readonly duration: Uint8Array;
+  readonly playing: boolean;
 }
 
 export interface SessionLaunch {
@@ -536,19 +537,24 @@ function extractString(data: Uint8Array, field: string): Uint8Array {
     let start = i + marker.length;
     while (start < data.length && data[start] === 32) start += 1;
     if (start >= data.length || data[start] !== 34) return EMPTY;
-    const out: number[] = [];
+    const out = new Uint8Array(data.length);
+    let n = 0;
+    let closed = false;
     for (let j = start + 1; j < data.length; j += 1) {
-      if (data[j] === 92) {
+      let byte = data[j];
+      let escaped = false;
+      if (byte === 92) {
         const next = data[j + 1];
-        if (next === 34 || next === 92) { out.push(next); j += 1; continue; }
-        if (next === 110) { out.push(10); j += 1; continue; }
-        if (next === 114) { out.push(13); j += 1; continue; }
-        if (next === 116) { out.push(9); j += 1; continue; }
+        if (next === 34 || next === 92) { byte = next; j += 1; escaped = true; }
+        else if (next === 110) { byte = 10; j += 1; escaped = true; }
+        else if (next === 114) { byte = 13; j += 1; escaped = true; }
+        else if (next === 116) { byte = 9; j += 1; escaped = true; }
       }
-      if (data[j] === 34) return new Uint8Array(out);
-      out.push(data[j]);
+      if (!escaped && byte === 34) { closed = true; break; }
+      out[n] = byte;
+      n += 1;
     }
-    return EMPTY;
+    return closed ? out.slice(0, n) : EMPTY;
   }
   return EMPTY;
 }
@@ -673,11 +679,11 @@ function identityInitials(name: Uint8Array): Uint8Array {
 }
 
 function addChatMessage(model: Model, text: Uint8Array, sent: boolean, status: Uint8Array): Model {
-  return comUpdate({ ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text, sent, timestamp: utf8Bytes("just now"), status, audio: EMPTY, isAudio: false, audioReady: false, duration: EMPTY }] }, {});
+  return comUpdate({ ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text, sent, timestamp: utf8Bytes("just now"), status, audio: EMPTY, isAudio: false, audioReady: false, duration: EMPTY, playing: false }] }, {});
 }
 
 function addAudioMessage(model: Model, ticket: Uint8Array, sent: boolean, ready: boolean, duration: Uint8Array): Model {
-  return comUpdate({ ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text: utf8Bytes("Voice message"), sent, timestamp: utf8Bytes("just now"), status: utf8Bytes(""), audio: ticket, isAudio: true, audioReady: ready, duration }] }, {});
+  return comUpdate({ ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text: utf8Bytes("Voice message"), sent, timestamp: utf8Bytes("just now"), status: utf8Bytes(""), audio: ticket, isAudio: true, audioReady: ready, duration, playing: false }] }, {});
 }
 
 function setLastMessageStatus(model: Model, status: Uint8Array): Model {
@@ -1592,15 +1598,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (item === undefined || !item.audioReady) return model;
       // real play/pause toggle: FFI play supersedes, stop_playback halts
       if (sameBytes(item.audio, model.playingTicket)) {
-        return [comUpdate({ ...model, playingTicket: EMPTY }, {}), Cmd.request("media.recording.stop_playback", EMPTY, { key: "media-playback", ok: "playback_stopped", err: "playback_error" })];
+        const history = model.history.map((entry) => (sameBytes(entry.id, item.id) ? { ...entry, playing: false } : entry));
+        return [comUpdate({ ...model, history, playingTicket: EMPTY }, {}), Cmd.request("media.recording.stop_playback", EMPTY, { key: "media-playback", ok: "playback_stopped", err: "playback_error" })];
       }
-      return [comUpdate({ ...model, playingTicket: item.audio }, {}), Cmd.request("media.recording.play", item.audio, { key: "media-playback", ok: "playback_started", err: "playback_error" })];
+      const history = model.history.map((entry) => (sameBytes(entry.id, item.id) ? { ...entry, playing: true } : entry));
+      return [comUpdate({ ...model, history, playingTicket: item.audio }, {}), Cmd.request("media.recording.play", item.audio, { key: "media-playback", ok: "playback_started", err: "playback_error" })];
     }
     case "playback_started":
     case "playback_stopped":
       return model;
     case "playback_error":
-      return { ...model, playingTicket: EMPTY };
+      return { ...model, history: model.history.map((entry) => (entry.playing ? { ...entry, playing: false } : entry)), playingTicket: EMPTY };
   }
 }
 
