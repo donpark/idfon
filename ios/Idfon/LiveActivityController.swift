@@ -93,6 +93,11 @@ final class LiveActivityController: NSObject {
     private var startedAt: Date?
     private var timer: Timer?
 
+    /// Scene-owned singleton access, for surfaces that must re-assert the
+    /// call chrome when they re-appear (a chat returning under a dismissed
+    /// modal can hold items written before the call state moved).
+    static private(set) var shared: LiveActivityController?
+
     /// The call machine owning the Bar. Exactly one can be non-idle: an
     /// audio invite carries no `media` line and a `media=video-call` invite
     /// belongs to `VideoCall`; each machine ignores the other's envelopes.
@@ -266,6 +271,7 @@ final class LiveActivityController: NSObject {
     init(windowScene: UIWindowScene) {
         overlay = OverlayWindow(windowScene: windowScene)
         super.init()
+        Self.shared = self
         overlay.onIntent = { [weak self] peerId, intent in
             self?.handle(intent, peerId: peerId)
         }
@@ -358,6 +364,12 @@ final class LiveActivityController: NSObject {
             camOn = machine?.videoEnabled ?? false
         }
         phase = next
+
+        // A live video stream keeps the screen awake — whether the frames are
+        // on the fullscreen call screen or the chat's inline bar. Audio-only
+        // calls let the screen sleep as usual.
+        UIApplication.shared.isIdleTimerDisabled =
+            VideoCall.shared.state == .calling || VideoCall.shared.state == .inCall
 
         if next == .inCall {
             if startedAt == nil {
@@ -453,6 +465,15 @@ final class LiveActivityController: NSObject {
         overlay.render(models)
     }
 
+    /// Re-writes the visible chat's call chrome from current state, ignoring
+    /// the no-change fast path: a chat that re-appears can carry an item that
+    /// was correct when written and is stale now.
+    func syncNavChromeNow() {
+        navChromeChat = nil
+        navChromeKey = nil
+        syncNavChrome()
+    }
+
     /// The visible thread's nav bar starts and stops the call (D8: one
     /// call-state button left of the chat's stable overflow); the Bar row
     /// operates the call (mic/cam/speaker/answer/decline — D2). The chat owns
@@ -515,7 +536,17 @@ final class LiveActivityController: NSObject {
         guard let peer = visiblePeerRef() else { return }
         requestCall(peer)
     }
-    @objc private func navEndTapped() { ActiveMachine.current?.hangUp() }
+    @objc private func navEndTapped() {
+        if let machine = ActiveMachine.current {
+            machine.hangUp()
+            return
+        }
+        // No machine behind the button: the chrome is stale (a call that ended
+        // while this item was dressed, or a dial placeholder that never
+        // became a call). Never leave a dead hang-up button on the nav bar.
+        pendingCall = nil
+        syncNavChromeNow()
+    }
 
     // MARK: - Elapsed timer
 

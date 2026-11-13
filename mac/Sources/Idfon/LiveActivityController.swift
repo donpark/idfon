@@ -35,6 +35,9 @@ final class LiveActivityController {
     private var timer: Timer?
     private var peerNames: [String: String] = [:]
     private var observers: [NSObjectProtocol] = []
+    /// Keeps the display (and the box) awake while a video stream is live —
+    /// the macOS analogue of iOS's `isIdleTimerDisabled`. Nil when not held.
+    private var wakeActivity: NSObjectProtocol?
     /// Placeholder for §3's ephemeral "Free to talk?" ping: the protocol has no
     /// ephemeral envelope, so this is an ordinary low-priority text.
     private static let pingMessage = "Free to talk?"
@@ -54,7 +57,10 @@ final class LiveActivityController {
         Task { await refreshPeerNames() }
     }
 
-    deinit { timer?.invalidate() }
+    deinit {
+        timer?.invalidate()
+        if let wakeActivity { ProcessInfo.processInfo.endActivity(wakeActivity) }
+    }
 
     /// Anchors the overlay under `window`'s title bar and keeps it there.
     func attach(to window: NSWindow) {
@@ -248,6 +254,7 @@ final class LiveActivityController {
             camOn = machine?.videoEnabled ?? false
         }
         phase = next
+        updateWakeActivity()
 
         if next == .inCall {
             if startedAt == nil { startedAt = Date(); startTimer() }
@@ -262,6 +269,25 @@ final class LiveActivityController {
             Task { await refreshPeerNames() }
         }
         render()
+    }
+
+    /// A live video stream must not let the screen sleep — whether the frames
+    /// are on the fullscreen stage or the chat's inline panel. Audio-only calls
+    /// leave sleep alone. Held for `.watching` too: a shared video is a stream.
+    private func updateWakeActivity() {
+        let videoLive: Bool
+        switch VideoCall.shared.state {
+        case .calling, .watching, .inCall: videoLive = true
+        case .idle, .incoming: videoLive = false
+        }
+        if videoLive, wakeActivity == nil {
+            wakeActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+                reason: "Idfon video call in progress")
+        } else if !videoLive, let wakeActivity {
+            ProcessInfo.processInfo.endActivity(wakeActivity)
+            self.wakeActivity = nil
+        }
     }
 
     private func render() {

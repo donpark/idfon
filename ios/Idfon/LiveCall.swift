@@ -794,6 +794,14 @@ final class HybridVoice {
         segmenter.stop()
         asr?.stop()
         asr = nil
+        // A `speak()` in flight must not finish its utterance after the call
+        // is gone: cancel the chain and silence the engine (2026-11-12: she
+        // said the call ended but kept talking).
+        speakChain?.cancel()
+        speakChain = nil
+        pendingChunks.removeAll()
+        feeders.removeAll()
+        tts.stop()
     }
 
     /// Speak an agent transcript when TTS is on-device. The `final` closes
@@ -825,6 +833,9 @@ final class HybridVoice {
         pendingChunks[turn] = queued
         speakChain = Task { @MainActor in
             await prior?.value
+            // `stop()` (hangup) must silence the mouth: skip any chunk still
+            // queued behind the one that was playing when the call ended.
+            guard self.isActive else { return }
             TurnReplay.shared.openAgent(turnKey: turn)
             await self.tts.speak(text)
             let left = (self.pendingChunks[turn] ?? 1) - 1

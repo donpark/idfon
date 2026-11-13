@@ -531,6 +531,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             guard let ref = note.userInfo?["ref"] as? String else { return }
             self?.dial(peerRef: ref)
         }
+        registerCallObservers()
+    }
+
+    /// Call-state observers for the inline video bar and call feedback. Idempotent:
+    /// re-registered on re-appearance after viewDidDisappear stripped them.
+    private func registerCallObservers() {
         videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonVideoChanged, object: nil, queue: .main) { [weak self] _ in
             self?.syncVideoBar()
         })
@@ -554,6 +560,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // Re-arm the call-state surfaces: viewDidDisappear strips the video
+        // observers, and a chat that re-appears after the call state moved
+        // must not show stale call chrome (2026-11-12: a hung-up call left
+        // the red hang-up button on the nav bar).
+        if videoObservers.isEmpty { registerCallObservers() }
+        syncVideoBar()
+        LiveActivityController.shared?.syncNavChromeNow()
         // A rename in the person screen must be reflected when we come back.
         title = roomTitle
         titleButton.setTitle(conversation.title, for: .normal)
