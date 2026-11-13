@@ -319,7 +319,9 @@ separate defects were fixed, and the relay traffic shows each one:
    ~2 s of extra latency once per blob).
 
 Direct selection in the moderate cell took under 300 ms, so 2 s is a
-conservative ceiling rather than a typical cost.
+conservative ceiling rather than a typical cost. Three repeat runs all
+selected direct (get relay rx 35.1, 50.5 and 35.7 kB), so the result is
+not a lucky punch.
 
 Lab build notes for reproducing on macOS: sim commands address staged
 binaries as `${binary.<name>}`, so the run must pass
