@@ -5071,13 +5071,19 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
             false,
         );
     };
-    let state = store.lock().expect("store mutex poisoned");
+    // Only the path is wanted, and the guard must not outlive it: `run_fetch`
+    // blocks for the whole transfer (up to its network timeouts), so holding
+    // the daemon's store lock across it would stall every other IPC request.
+    let data_dir = {
+        let state = store.lock().expect("store mutex poisoned");
+        state.data_dir.clone()
+    };
     let bytes = if let Some(ticket) = request
         .params
         .get("blob_ticket")
         .and_then(serde_json::Value::as_str)
     {
-        match blob::run_fetch(ticket.into(), state.data_dir.join("blobs-fetched")) {
+        match blob::run_fetch(ticket.into(), data_dir.join("blobs-fetched")) {
             Ok(path) => std::fs::read(path),
             Err(error) => {
                 return error_response(
@@ -5102,10 +5108,9 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
         Ok(bytes) => {
             let total_size = bytes.len();
             // Chunked reads: `offset`/`length` slice the payload so responses
-            // stay under the IPC frame limit. With a blob_ticket this reuses
-            // the per-identity FsStore under blobs-fetched, which persists
-            // downloaded blobs — the first chunk downloads, later chunks are
-            // local reads.
+            // stay under the IPC frame limit. `run_fetch` caches the transfer as
+            // a content-verified `{hash}.blob` under blobs-fetched, so the first
+            // chunk downloads and later chunks are local reads.
             // ponytail: slice-after-full-download; range requests on the
             // blob protocol would avoid the double transfer for big blobs.
             let offset = request

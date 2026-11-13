@@ -264,13 +264,20 @@ Two `idfond` nodes (alice behind `moderate`, bob behind `strict`, then both
 `sha256` matched on every run, so the daemon path works through a private
 TLS relay with a private CA. Two things it exposed:
 
-- **The blob path never went direct.** Relay-device rx grew by ~92 MB during
-the `get` in *both* cells (~6.5x for 1 MiB, ~22x for 4 MiB — the overhead is
-unexplained and deserves its own look), while `put` cost ~11 kB. Taking the
-relay's link down between `put` and `get` fails the fetch with
-`PeerOffline: Unable to download`, so every byte went through the relay even
-on `moderate` ↔ `moderate`, where `iroh-doctor` on the same NAT pair punched.
-That is the gap the lab exists to find.
+- **The blob path never went direct, and the measured blob traffic was
+inflated by a daemon bug.** Relay-device rx grew by ~92 MB during the `get`
+in *both* cells (~6.5x for 1 MiB, ~22x for 4 MiB), while `put` cost ~11 kB.
+Those multiples are `ceil(size / 200 kB)`: every chunk request re-downloaded
+the whole blob, because the per-request `FsStore` was dropped without
+`shutdown()`, losing the completion state it had just written. Fixed
+2026-11-12 in `crates/idfon-daemon/src/blob.rs` — one content-verified
+`blobs-fetched/{hash}.blob` now serves every later slice. A repeat run should
+show roughly one file size of relay rx; a higher multiple is a regression.
+The path is still never direct: taking the relay's link down between `put`
+and `get` fails the fetch with `PeerOffline: Unable to download`, so every
+byte went through the relay even on `moderate` ↔ `moderate`, where
+`iroh-doctor` on the same NAT pair punched. That remains the gap the lab
+exists to find.
 - The lab needs two build knobs, both env-gated and generally useful:
   `IDFON_RELAY_CA_FILE=<pem>` makes the daemon trust a relay with a private
   CA (the relay client otherwise verifies against Mozilla's roots), and
@@ -285,6 +292,44 @@ That is the gap the lab exists to find.
   `-l:libstdc++.a -lc` after the archive (OpenH264 is C++), and a stub
   `libasound.a`: the Debian `.so` is glibc and pulls glibc symbols into an
   otherwise static musl binary.
+
+#### Post-fix re-runs (2026-11-12)
+
+Same cells, same 4 MiB `put` -> `get`, `sha256` matched everywhere. Two
+separate defects were fixed, and the relay traffic shows each one:
+
+| cell | put relay rx | get relay rx | get / payload | path |
+|---|---|---|---|---|
+| moderate <-> moderate | +11.5 kB | +35.5 kB | 0.008x | direct |
+| moderate <-> strict | +11.5 kB | +4.42 MB | 1.05x | relay |
+
+1. **Per-chunk re-download.** Before the cache fix, get rx was ~92 MB (22x)
+   in both cells, matching `ceil(size / 200 kB)` full downloads. With the
+   content-verified `blobs-fetched/{hash}.blob` cache, both cells dropped to
+   4.40 MB (1.05x): one full transfer, then local slices.
+2. **The blob path never went direct.** After the cache fix alone, the
+   moderate cell still relayed the whole payload. `blob::fetch` dialed the
+   provider and started the download immediately; hole punching only begins
+   once that connection exists, so a sub-second transfer finished on the
+   relay before a direct path was selected. It now dials first and waits
+   (bounded, 2 s) for a selected direct IP path before downloading, holding
+   the connection open. Moderate then moved the payload direct and matched
+   `iroh-doctor`'s +34.7 kB of relay signaling; strict has no direct path, so
+   the bounded wait falls through to the relay with unchanged traffic (and
+   ~2 s of extra latency once per blob).
+
+Direct selection in the moderate cell took under 300 ms, so 2 s is a
+conservative ceiling rather than a typical cost. Three repeat runs all
+selected direct (get relay rx 35.1, 50.5 and 35.7 kB), so the result is
+not a lucky punch.
+
+Lab build notes for reproducing on macOS: sim commands address staged
+binaries as `${binary.<name>}`, so the run must pass
+`--binary idfond:path:... --binary idfon:path:... --binary relay:path:...`.
+The musl daemon needs a fake ALSA pkg-config plus a stub `libasound.a`,
+`--no-default-features` on `iroh-c-ffi` (skips VAAPI), `IDFON_FFI_STATIC=1`
+for `idfond`, and
+`RUSTFLAGS="-C link-arg=-Wl,--allow-multiple-definition -C link-arg=-Wl,--unresolved-symbols=ignore-all"`.
 
 ### The QAD/TLS trap (this cost a full false negative)
 
@@ -305,9 +350,28 @@ enables that feature and accepts the cert behind an env guard
 
 ### Known gaps
 
-- Apple's container kernel has no `sch_netem` (`tc qdisc add … netem` →
-  "Specified qdisc kind is unknown"), so `impair` / `set-link-condition`
-  silently do nothing. Use the QEMU backend if the loss/latency rows matter.
+- **Impairment needs the QEMU backend.** The Apple container kernel (6.18.5,
+  `container` 0.9.0) has no `sch_netem`: `tc qdisc add … netem` fails with
+  "Specified qdisc kind is unknown", so `impair` / `set-link-condition`
+  silently does nothing there. The QEMU backend's Debian kernel has it; a
+  `set-link-condition` step applied
+  `qdisc netem 1: root refcnt 15 limit 1000 delay 20ms loss 1%` and read it
+  back from inside the device namespace (2026-11-12).
+- Two environmental snags when running the QEMU backend on macOS:
+  1. The Debian **cloud** kernel has no 9p modules, so `/app`, `/target` and
+     `/work` fail to mount (`unknown filesystem type '9p'`). Install
+     `linux-image-arm64` in the guest and boot it — that kernel's 9p modules
+     are present. `GRUB_DEFAULT="1>2"` selects it under the "Advanced"
+     submenu (the cloud kernel stays the default otherwise).
+  2. patchbay invokes the guest runner via `sudo`, and root over the 9p share
+     hits `EACCES` creating the nested `run-*/.assemble` dirs. Run the runner
+     as the guest user instead, with the guest uid matching the host share
+     owner (e.g. `usermod -u <host-uid> dev`):
+     `sudo -u dev env NETSIM_IN_VM=1 NETSIM_TARGET_DIR=/target
+     /work/.patchbay-bin/patchbay run --work-dir /work <sim>`.
+- patchbay finds `qemu-img` through `sh -lc`, whose login PATH on this host
+  omits `/opt/homebrew/bin`. Symlink `qemu-img` and `qemu-system-aarch64`
+  into `/usr/local/bin` before using the QEMU backend.
 - No Apple processes inside a lab, so it can never cover app ↔ daemon
   transfers; no clock virtualization; the lab is a closed world with an
   in-process DNS server and no host egress, so n0 discovery is unreachable —

@@ -1,6 +1,9 @@
 use std::{
-    path::PathBuf,
-    sync::{Mutex, OnceLock},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
 };
 
 use iroh::protocol::Router;
@@ -79,6 +82,13 @@ pub async fn fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
             ticket.format()
         );
     }
+    let output = root.join(format!("{}.blob", ticket.hash()));
+    // A completed transfer is the cache for all later chunk requests: check it
+    // before binding an endpoint or opening the store, so a cache hit costs one
+    // local read and no network, no blobs.db lock, and no retry sleep.
+    if cache_matches(&output, ticket.hash()) {
+        return Ok(output);
+    }
     // The sender's first pkarr publish may still be propagating when the fetch
     // arrives; the lookup then fails and DNS negative caching would poison
     // retries on the same endpoint. Rebind a fresh endpoint per attempt so
@@ -98,7 +108,7 @@ pub async fn fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
             .address_lookup(lookup)
             .bind()
             .await?;
-        let result = fetch_with(&ticket, &endpoint, &root).await;
+        let result = fetch_with(&ticket, &endpoint, &root, &output).await;
         endpoint.close().await;
         match result {
             Ok(path) => return Ok(path),
@@ -108,24 +118,114 @@ pub async fn fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
     Err(last.expect("at least one attempt"))
 }
 
+/// True only for a cache file whose bytes hash to the blob's hash. Exports can
+/// be interrupted, and older builds wrote the target non-atomically, so the
+/// file's presence alone proves nothing.
+fn cache_matches(path: &Path, hash: iroh_blobs::Hash) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => return hasher.finalize().as_bytes() == hash.as_bytes(),
+            Ok(n) => {
+                hasher.update(&buf[..n]);
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Waits until a direct IP path is selected, or `limit` elapses. The relay
+/// path already works; this only decides whether the transfer starts before or
+/// after hole punching wins.
+async fn wait_for_direct_path(
+    conn: &iroh::endpoint::Connection,
+    limit: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if conn.paths().iter().any(|path| path.is_ip() && path.is_selected()) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 async fn fetch_with(
     ticket: &BlobTicket,
     endpoint: &Endpoint,
     root: &PathBuf,
+    output: &Path,
 ) -> anyhow::Result<PathBuf> {
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
     let store = FsStore::load(root).await?;
-    // The downloader has no internal timeout; a stuck connection must not hang
-    // the daemon request (and worker) indefinitely.
-    tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        store
-            .downloader(endpoint)
-            .download(ticket.hash(), Some(ticket.addr().id)),
-    )
-    .await??;
-    let output = root.join(format!("{}.blob", ticket.hash()));
-    store.blobs().export(ticket.hash(), &output).await?;
-    Ok(output)
+    let result = async {
+        // Dial before the downloader does, so hole punching starts while the
+        // transfer is still being set up. Paths opened on this connection are
+        // opened on the downloader's connection too, so a direct path found
+        // here is what keeps a short transfer off the relay.
+        let prewarm = match endpoint.connect(ticket.addr().clone(), BLOBS_ALPN).await {
+            Ok(conn) => {
+                let direct =
+                    wait_for_direct_path(&conn, std::time::Duration::from_secs(2)).await;
+                tracing::debug!(target: "idfon.blob", direct, "blob fetch prewarm");
+                Some(conn)
+            }
+            Err(error) => {
+                tracing::debug!(target: "idfon.blob", %error, "blob fetch prewarm failed");
+                None
+            }
+        };
+        // The downloader has no internal timeout; a stuck connection must not
+        // hang the daemon request (and worker) indefinitely.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            store
+                .downloader(endpoint)
+                .download(ticket.hash(), Some(ticket.addr().id)),
+        )
+        .await??;
+        // Copy the verified blob out ourselves instead of `export`: write to a
+        // unique temp file, fsync, then rename. A reader therefore never sees a
+        // half-written cache file, and concurrent fetches cannot interleave.
+        let tmp = root.join(format!(
+            "{}.blob.tmp.{}.{}",
+            ticket.hash(),
+            std::process::id(),
+            NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let write = async {
+            let mut reader = store.blobs().reader(ticket.hash());
+            let mut file = tokio::fs::File::create(&tmp).await?;
+            tokio::io::copy(&mut reader, &mut file).await?;
+            file.sync_all().await?;
+            drop(file);
+            tokio::fs::rename(&tmp, output).await?;
+            Ok::<_, std::io::Error>(())
+        }
+        .await;
+        if let Err(error) = write {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(error.into());
+        }
+        drop(prewarm);
+        Ok::<PathBuf, anyhow::Error>(output.to_path_buf())
+    }
+    .await;
+    // `Drop` shuts the store down in the background: pending DB commits are
+    // lost and blobs.db stays locked for a moment (the per-request retry loop
+    // used to eat that as a 1s sleep). Close it deliberately; the cache file is
+    // already durable, so a failure (or a stuck shutdown) must not fail the
+    // fetch or hang the request.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), store.shutdown()).await;
+    result
 }
 
 pub fn run_fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
@@ -162,5 +262,70 @@ mod tests {
             ))
             .unwrap_err();
         assert!(error.to_string().contains("Raw"), "{error}");
+    }
+
+    /// A second fetch of the same ticket must come from the verified cache
+    /// file, not the network and not the store's own copy (a chunked transfer
+    /// asks for the same blob once per chunk).
+    #[test]
+    fn second_fetch_uses_verified_cache() {
+        runtime().block_on(async {
+            let base =
+                std::env::temp_dir().join(format!("idfon-blob-cache-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            // Provider side, built by hand so we can shut it down.
+            let provider = idfon_core::relay::endpoint_builder().bind().await.unwrap();
+            let provider_store = FsStore::load(base.join("blobs")).await.unwrap();
+            let protocol = BlobsProtocol::new(provider_store.as_ref(), None);
+            let router = iroh::protocol::Router::builder(provider.clone())
+                .accept(BLOBS_ALPN, protocol)
+                .spawn();
+            let data = vec![7u8; 512 * 1024];
+            let content = provider_store.blobs().add_slice(&data).await.unwrap();
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), provider.online()).await;
+            let ticket = BlobTicket::new(provider.addr(), content.hash, content.format);
+            let fetch_root = base.join("fetched");
+
+            let first = fetch(ticket.to_string(), fetch_root.clone()).await.unwrap();
+            // Keep only the cache file, so the store's local copy cannot be
+            // what makes the second fetch succeed.
+            let bytes = std::fs::read(&first).unwrap();
+            std::fs::remove_dir_all(&fetch_root).unwrap();
+            std::fs::create_dir_all(&fetch_root).unwrap();
+            std::fs::write(fetch_root.join(first.file_name().unwrap()), &bytes).unwrap();
+
+            router.shutdown().await.ok();
+            provider.close().await;
+            drop(provider_store);
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            let second = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                fetch(ticket.to_string(), fetch_root.clone()),
+            )
+            .await
+            .expect("cache miss: the second fetch needed the network")
+            .unwrap();
+            assert_eq!(second, fetch_root.join(format!("{}.blob", ticket.hash())));
+            let _ = std::fs::remove_dir_all(&base);
+        });
+    }
+
+    /// A truncated or tampered cache file must not be served.
+    #[test]
+    fn cache_rejects_corrupt_file() {
+        let root =
+            std::env::temp_dir().join(format!("idfon-blob-cache-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let data = b"cache me";
+        let hash = iroh_blobs::Hash::new(data);
+        let path = root.join(format!("{hash}.blob"));
+        std::fs::write(&path, data).unwrap();
+        assert!(cache_matches(&path, hash));
+        std::fs::write(&path, b"cache m3").unwrap();
+        assert!(!cache_matches(&path, hash));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
