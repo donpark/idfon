@@ -166,6 +166,27 @@ seven real endpoints admitted on ~10-year leases (edge, mac, iPhone, four
 agent peers) and `IDFON_RELAY_ISSUERS` = the mac identity key. Rollback is
 one redeploy without `IDFON_RELAY_AUTH` (verified).
 
+## Server placement vs first-voice latency — measured 2026-11-12
+
+Moving the DO server (edge + co-located relay) from the East Coast (`nyc3`)
+to the SF region (`sfo3`) shaved **~100 ms off live-call → first-voice
+latency**. Coast-to-coast RTT here is ~65–70 ms, so the server is in the
+call's critical path by roughly 2–3 serialized round trips and/or relayed
+media hops — server proximity is a first-order demo lever, not a rounding
+error.
+
+Implications (keep with the number):
+
+- For an SF-area audience the move captured the whole win; for distant
+  (EU/Asia) users one region cannot — the fix is regional relays (small
+  multi-region nodes) or N0's multi-region fallback relay network, per
+  `docs/relay-config.md` precedence.
+- Decomposition (setup RTTs vs media hops vs server→model/provider RTT) is
+  open; the `bench` agent (relay/message latency + voice-turn reports) is the
+  tool, and `scripts/patchbay/` can reproduce far/near pairs hermetically.
+- Single A/B (one pair of devices, one move) — treat as directional evidence,
+  not a budget. Re-measure with `bench` before spending on multi-region.
+
 ## Network-path simulation (patchbay) — adopted 2026-11-05
 
 [n0-computer/patchbay](https://github.com/n0-computer/patchbay) builds a lab
